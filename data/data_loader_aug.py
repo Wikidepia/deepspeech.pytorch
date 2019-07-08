@@ -489,8 +489,10 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                                   min=len(self.all_ids) * sample_size)
             )
             # ensure the exact sample size
-            self.ids = random.sample(self.ids,
-                                     k=int(len(self.all_ids) * sample_size))
+            if len(self.ids)>(int(len(self.all_ids) * sample_size)+100):
+                print('Subsampling the chosen curriculum')
+                self.ids = random.sample(self.ids,
+                                         k=int(len(self.all_ids) * sample_size))
         else:
             self.ids = self.all_ids.copy()
         np.random.seed(epoch)
