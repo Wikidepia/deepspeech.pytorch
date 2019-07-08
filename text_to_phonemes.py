@@ -36,6 +36,7 @@ def process_text_file(tup):
 
     with open(path, 'r', encoding="utf-8") as file:
         text = file.read().replace('\n', '')
+        text = replace_encoded(text)
     
     try:
         transcription = ' '.join([''.join(_[0]) for _
@@ -50,6 +51,25 @@ def process_text_file(tup):
 def read_manifest(manifest_path):
     return pd.read_csv(manifest_path,
                        names=['wav_path','text_path','duration'])
+
+def replace_encoded(text):
+    text = text.lower()
+    # handle stupid edge case
+    while text.startswith('2'):
+        text = text[1:]
+    if '2' in text:
+        text = list(text)
+        _text = []
+        for i,char in enumerate(text):
+            if char=='2':
+                try:
+                    _text.extend([_text[-1]])
+                except:
+                    print(''.join(text))
+            else:
+                _text.extend([char])  
+        text = ''.join(_text)
+    return text
 
 manifests = ['../data/manifests/train_v05_cleaned_asr.csv',
              '../data/manifests/val_v05_cleaned_asr.csv',
