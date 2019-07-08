@@ -488,6 +488,9 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                                   epoch=epoch,
                                   min=len(self.all_ids) * sample_size)
             )
+            # ensure the exact sample size
+            self.ids = random.sample(self.ids,
+                                     k=int(len(self.all_ids) * sample_size))
         else:
             self.ids = self.all_ids.copy()
         np.random.seed(epoch)
