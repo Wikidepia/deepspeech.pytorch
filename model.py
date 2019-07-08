@@ -177,7 +177,7 @@ class Lookahead(nn.Module):
                + ', context=' + str(self.context) + ')'
 
 
-DEBUG = 1
+DEBUG = 0
 
 
 class DeepSpeech(nn.Module):
@@ -341,7 +341,7 @@ class DeepSpeech(nn.Module):
             )
 
     def forward(self, x, lengths):
-        assert x.is_cuda
+        # assert x.is_cuda
         lengths = lengths.cpu().int()
         output_lengths = self.get_seq_lens(lengths).cuda()
 

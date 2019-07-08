@@ -129,8 +129,8 @@ def get_stacked_noise(noise_path=None,
         if noise.shape[0]>wav.shape[0]:
             # we have enough noise already!
             break
-        if i==10:
-            print('Used 10 noise samples')
+        if _==10:
+            print('Used 10 noise samples to construct noise')
     return noise
 
 

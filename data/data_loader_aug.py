@@ -474,8 +474,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
     def get_curriculum_info(self, item):
         audio_path, transcript_path, _dur = item
         if audio_path not in self.curriculum:
-            return self.get_reference_transcript(transcript_path), 0.999
-        return self.curriculum[audio_path]['text'], self.curriculum[audio_path]['cer']
+            return self.get_reference_transcript(transcript_path), 0.999, 0
+        return self.curriculum[audio_path]['text'], self.curriculum[audio_path]['cer'], self.curriculum[audio_path]['times_used']
 
     def set_curriculum_epoch(self, epoch,
                              sample=False,
@@ -507,12 +507,22 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         }
 
     def save_curriculum(self, fn):
+        zero_times_used = 0
+        nonzero_time_used = 0
+        temp_file = 'current_curriculum_state.txt'
         with open(fn, 'w') as f:
             writer = csv.DictWriter(f, ['wav', 'text', 'transcript', 'offsets',
                                         'times_used', 'cer', 'wer'])
             writer.writeheader()
             for cl in self.curriculum.values():
                 writer.writerow(cl)
+                if cl['times_used']>0:
+                    nonzero_time_used+=1
+                else:
+                    zero_times_used+=1
+        with open(temp_file, "w") as f:
+            f.write('Non used files {:,} / used files {:,}'.format(zero_times_used,
+                                                                   nonzero_time_used))
 
     def parse_transcript(self, transcript_path):
         global TS_CACHE

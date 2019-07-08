@@ -36,13 +36,16 @@ def process_text_file(tup):
 
     with open(path, 'r', encoding="utf-8") as file:
         text = file.read().replace('\n', '')
-        
-    transcription = ' '.join([''.join(_[0]) for _
-                              in your_transcriptor.transcribe(text.split(' '))])
     
-    with open(target_path, "w") as transcription_file:
-        print(transcription, file=transcription_file)
-    return text,transcription
+    try:
+        transcription = ' '.join([''.join(_[0]) for _
+                                  in your_transcriptor.transcribe(text.split(' '))])
+
+        with open(target_path, "w") as transcription_file:
+            print(transcription, file=transcription_file)
+        return text,transcription
+    except:
+        return ''
 
 def read_manifest(manifest_path):
     return pd.read_csv(manifest_path,
@@ -64,7 +67,7 @@ data = list(data)
 
 your_transcriptor = Transcription()
 
-text_tuples = [process_text_file(tup) for tup in tqdm(data[0:1000])]
+text_tuples = [process_text_file(tup) for tup in tqdm(data)]
 
 proc_df = pd.DataFrame(text_tuples, columns=['text','phoneme'])
 proc_df.to_feather('text_to_phoneme.feather')
