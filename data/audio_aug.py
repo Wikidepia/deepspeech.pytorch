@@ -91,7 +91,7 @@ class AddNoise:
         for i in range(0,2):
             if random.random() < self.prob:
                 if i==0:
-                    _noise = get_stacked_noise(noise_path=random.sample(self.noise_samples,k=1)[0],
+                    _noise = get_stacked_noise(self.noise_samples,
                                                wav=wav,
                                                sr=sr)
                     # noise still should be longer than audio
@@ -107,24 +107,25 @@ class AddNoise:
         return {'wav':wav,'sr':sr}    
 
 
-def get_stacked_noise(noise_path=None,
+def get_stacked_noise(noise_paths=None,
                       wav=None,
                       sr=16000):
     # randomly read noises to stack them
     # into one noise file longer than our audio
     # 10 files max
     for _ in range(0,10):
+        noise_path = random.sample(noise_paths,
+                                   k=1)[0]
         _noise, _sample_rate = load_audio_norm(noise_path)
         assert len(_noise.shape)==1
         if _sample_rate!=sr:
-            y = librosa.resample(y, _sample_rate, sample_rate)
+            _noise = librosa.resample(_noise, _sample_rate, sr)
 
         if _>0:
-            noise = np.stack((noise, _noise),
-                             axis=0)
+            noise = np.concatenate((noise, _noise),
+                                   axis=0)
         else:
             noise = _noise
-
         assert len(noise.shape)==1
         if noise.shape[0]>wav.shape[0]:
             # we have enough noise already!
