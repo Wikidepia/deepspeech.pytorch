@@ -39,7 +39,7 @@ def process_text_file(tup):
         text = replace_encoded(text)
     
     try:
-        transcription = ' '.join([''.join(_[0]) for _
+        transcription = ' '.join(['-'.join(_[0]) for _
                                   in your_transcriptor.transcribe(text.split(' '))])
 
         with open(target_path, "w") as transcription_file:

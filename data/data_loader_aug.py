@@ -329,11 +329,13 @@ class SpectrogramParser(AudioParser):
 
 
 TS_CACHE = {}
-
+TS_PHONEME_CACHE = {}
 
 class SpectrogramDataset(Dataset, SpectrogramParser):
     def __init__(self, audio_conf, manifest_filepath, cache_path, labels, normalize=False, augment=False,
-                 max_items=None, curriculum_filepath=None):
+                 max_items=None, curriculum_filepath=None,
+                 phoneme_label_parser=None
+                ):
         """
         Dataset that loads tensors via a csv containing file paths to audio files and transcripts separated by
         a comma. Each new line is a different sample. Example below:
@@ -369,6 +371,9 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.aug_prob_8khz = audio_conf.get('aug_prob_8khz')
         self.aug_prob = audio_conf.get('noise_prob')
         self.aug_prob_spect = audio_conf.get('aug_prob_spect')
+        self.phoneme_count = audio_conf.get('phoneme_count',0) # backward compatible
+        if self.phoneme_counts>0:
+            self.phoneme_label_parser = phoneme_label_parser     
     
         if self.aug_prob>0:
             print('Using sound augs!')            
@@ -469,6 +474,12 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         audio_path, transcript_path, dur = sample[0], sample[1], sample[2]
         spect = self.parse_audio(audio_path)
         reference = self.parse_transcript(transcript_path)
+        
+        if self.phoneme_count>0:
+            phoneme_path = self.get_phoneme_path(transcript_path)
+            phoneme_reference = self.parse_phoneme(phoneme_path)
+            return spect, reference, audio_path, phoneme_reference
+        
         return spect, reference, audio_path
 
     def get_curriculum_info(self, item):
@@ -527,7 +538,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                     zero_times_used+=1
         with open(temp_file, "w") as f:
             f.write('Non used files {:,} / used files {:,}'.format(zero_times_used,
-                                                                   nonzero_time_used))
+                                                                   nonzero_time_used)+"\n")
 
     def parse_transcript(self, transcript_path):
         global TS_CACHE
@@ -539,7 +550,22 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                     ts = self.labels.parse(transcript_file.read())
             TS_CACHE[transcript_path] = ts
         return TS_CACHE[transcript_path]
+    
+    def parse_phoneme(self, phoneme_path):
+        global TS_PHONEME_CACHE
+        if phoneme_path not in TS_PHONEME_CACHE:
+            if not phoneme_path:
+                ts = self.phoneme_label_parser.parse('')
+            else:
+                with open(phoneme_path, 'r', encoding='utf8') as phoneme_file:
+                    ts = self.phoneme_label_parser.parse(phoneme_file.read())
+            TS_PHONEME_CACHE[phoneme_path] = ts
+        return TS_PHONEME_CACHE[phoneme_path]    
 
+    def get_phoneme_path(self,
+                         transcript_path):
+        return transcript_path.replace('.txt','_phoneme.txt')
+    
     def __len__(self):
         return self.size
 

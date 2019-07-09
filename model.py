@@ -183,7 +183,9 @@ DEBUG = 0
 class DeepSpeech(nn.Module):
     def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=6, audio_conf=None,
                  bidirectional=True, context=20, bnm=0.1,
-                 dropout=0,cnn_width=256):
+                 dropout=0,cnn_width=256,
+                 phoneme_count=0
+                 ):
         super(DeepSpeech, self).__init__()
 
         # model metadata needed for serialization/deserialization
@@ -199,6 +201,8 @@ class DeepSpeech(nn.Module):
         self._bnm = bnm
         self._dropout=dropout
         self._cnn_width=cnn_width
+        if phoneme_count>0:
+            self._phoneme_count=phoneme_count
 
         sample_rate = self._audio_conf.get("sample_rate", 16000)
         window_size = self._audio_conf.get("window_size", 0.02)
@@ -250,7 +254,12 @@ class DeepSpeech(nn.Module):
             )
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
-            )     
+            )
+            # make checkpoints reverse compatible
+            if hasattr(self, 'phoneme_count'):
+                self.fc_phoneme = nn.Sequential(
+                    nn.Conv1d(in_channels=size, out_channels=self.phoneme_count, kernel_size=1)
+                )                          
         elif self._rnn_type == 'cnn_jasper': # http://arxiv.org/abs/1904.03288
             size = 1024
             self.rnns = JasperNet(
@@ -349,6 +358,9 @@ class DeepSpeech(nn.Module):
                               'cnn_residual']:
             x = x.squeeze(1)
             x = self.rnns(x)
+            if hasattr(self, 'phoneme_count'):
+                x_phoneme = self.fc_phoneme(x)
+                x_phoneme = x_phoneme.transpose(1, 2).transpose(0, 1).contiguous()
             x = self.fc(x)
             x = x.transpose(1, 2).transpose(0, 1).contiguous()
         else:
@@ -377,7 +389,14 @@ class DeepSpeech(nn.Module):
         outs = F.softmax(x, dim=-1)
         if DEBUG: assert outs.is_cuda
         if DEBUG: assert output_lengths.is_cuda
-        return x, outs, output_lengths
+        
+        if hasattr(self, 'phoneme_count'):
+            x_phoneme = x_phoneme.transpose(0, 1)
+            outs_phoneme = F.softmax(x_phoneme, dim=-1)
+            # phoneme outputs will have the same length
+            return x, outs, output_lengths, x_phoneme, outs_phoneme
+        else:
+            return x, outs, output_lengths
 
     def get_seq_lens(self, input_length):
         """
@@ -410,18 +429,35 @@ class DeepSpeech(nn.Module):
 
     @classmethod
     def load_model_package(cls, package):
-        model = cls(rnn_hidden_size=package['hidden_size'],
-                    nb_layers=package['hidden_layers'],
-                    labels=package['labels'],
-                    audio_conf=package['audio_conf'],
-                    rnn_type=package['rnn_type'],
-                    bnm=package.get('bnm', 0.1),
-                    bidirectional=package.get('bidirectional', True),
-                    dropout=package.get('dropout', 0),
-                    cnn_width=package.get('cnn_width',0)
-                   )
+        kwargs = {
+            'rnn_hidden_size':package['hidden_size'],
+            'nb_layers':package['hidden_layers'],
+            'labels':package['labels'],
+            'audio_conf':package['audio_conf'],
+            'rnn_type':package['rnn_type'],
+            'bnm':package.get('bnm', 0.1),
+            'bidirectional':package.get('bidirectional', True),
+            'dropout':package.get('dropout', 0),
+            'cnn_width':package.get('cnn_width',0),
+            'phoneme_count':package.get('phoneme_count',0)        
+        }
+        model = cls(**kwargs)            
         model.load_state_dict(package['state_dict'])
         return model
+    
+    @classmethod
+    def add_phonemes_to_model(model,
+                              phoneme_count=0):
+        '''Add phonemes to an already pre-trained model
+        '''
+        model._phoneme_count=phoneme_count
+        model.fc_phoneme = nn.Sequential(
+            nn.Conv1d(in_channels=model._hidden_size,
+                      out_channels=model._phoneme_count,
+                      kernel_size=1)
+        )
+        return model
+ 
 
     @staticmethod
     def serialize(model, optimizer=None, epoch=None, iteration=None, loss_results=None, checkpoint=None,
@@ -442,6 +478,8 @@ class DeepSpeech(nn.Module):
             'dropout':model._dropout,
             'cnn_width':model._cnn_width
         }
+        if hasattr(model, '_phoneme_count'):
+            package['phoneme_count'] = model._phoneme_count
         if optimizer is not None:
             package['optim_dict'] = optimizer.state_dict()
         if avg_loss is not None:
