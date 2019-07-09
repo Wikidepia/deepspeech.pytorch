@@ -17,7 +17,7 @@ class PhonemeLabels:
 
     def parse(self, text):
         text = ''.join([_ for _ in list(text) if _ not in punctuation and _ in printable])
-        # this assumesa
+        # this assumes that
         # (i)  text is normalized
         # (ii) symbols not present in map are omitted
         phonetic_transcript = []

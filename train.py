@@ -42,6 +42,10 @@ parser.add_argument('--batch-size', default=20, type=int, help='Batch size for t
 parser.add_argument('--val-batch-size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--num-workers', default=4, type=int, help='Number of workers used in data-loading')
 parser.add_argument('--labels-path', default='labels.json', help='Contains all characters for transcription')
+
+parser.add_argument('--phonemes-path', default='phonemes_ru.json', help='Contains all phonemes for the Russian language')
+parser.add_argument('--use-phonemes',  action='store_true', default=False)
+
 parser.add_argument('--window-size', default=.02, type=float, help='Window size for spectrogram in seconds')
 parser.add_argument('--window-stride', default=.01, type=float, help='Window stride for spectrogram in seconds')
 parser.add_argument('--window', default='hamming', help='Window type for spectrogram generation')
@@ -817,14 +821,24 @@ if __name__ == '__main__':
     lr_plots = LRPlotWindow(args.id, 'lr_finder', log_x=True)
 
     total_avg_loss, start_epoch, start_iter, start_checkpoint = 0, 0, 0, 0
+    if args.use_phonemes:
+        with open(args.phonemes_path) as phoneme_file:
+            phoneme_map = {l: i for i, l
+                           in enumerate(json.load(phoneme_file))}
     if args.continue_from:  # Starting from previous model
         print("Loading checkpoint model %s" % args.continue_from)
         package = torch.load(args.continue_from, map_location=lambda storage, loc: storage)
         # package['dropout']=0.2
         model = DeepSpeech.load_model_package(package)
+        # start with non-phoneme model, continue with phonemes
         labels = DeepSpeech.get_labels(model)
         audio_conf = DeepSpeech.get_audio_conf(model)
-        
+        if args.use_phonemes and package.get('phoneme_count',0)==0:
+            model = DeepSpeech.add_phonemes_to_model(model,
+                                                     len(phoneme_map))
+            audio_conf['phoneme_count'] = len(phoneme_map)
+            audio_conf['phoneme_map'] = phoneme_map            
+            
         # REMOVE LATER
         # audio_conf['noise_dir'] = '../data/augs/*.wav'
         # audio_conf['noise_prob'] = 0.1
@@ -875,8 +889,11 @@ if __name__ == '__main__':
                           noise_prob=args.noise_prob,
                           noise_levels=(args.noise_min, args.noise_max),
                           aug_prob_8khz=args.aug_prob_8khz,
-                          aug_prob_spect=args.aug_prob_spect
-                         )
+                          aug_prob_spect=args.aug_prob_spect)
+        
+        if args.use_phonemes:
+            audio_conf['phoneme_count'] = len(phoneme_map)
+            audio_conf['phoneme_map'] = phoneme_map
 
         rnn_type = args.rnn_type.lower()
         assert rnn_type in supported_rnns, "rnn_type should be either lstm, rnn or gru"
@@ -888,7 +905,9 @@ if __name__ == '__main__':
                            audio_conf=audio_conf,
                            bidirectional=args.bidirectional,
                            bnm=args.batch_norm_momentum,
-                           dropout=args.dropout)
+                           dropout=args.dropout,
+                           phoneme_count=len(phoneme_map) if args.use_phonemes else 0                      
+                          )
         parameters = model.parameters()
         optimizer = build_optimizer(args, parameters)
 

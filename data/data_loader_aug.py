@@ -26,6 +26,7 @@ from torch.utils.data.sampler import Sampler
 from torch.distributed import get_world_size
 
 from data.labels import Labels
+from data.phoneme_labels import PhonemeLabels
 from data.curriculum import Curriculum
 from data.audio_aug import (ChangeAudioSpeed,
                             Shift,
@@ -333,9 +334,7 @@ TS_PHONEME_CACHE = {}
 
 class SpectrogramDataset(Dataset, SpectrogramParser):
     def __init__(self, audio_conf, manifest_filepath, cache_path, labels, normalize=False, augment=False,
-                 max_items=None, curriculum_filepath=None,
-                 phoneme_label_parser=None
-                ):
+                 max_items=None, curriculum_filepath=None):
         """
         Dataset that loads tensors via a csv containing file paths to audio files and transcripts separated by
         a comma. Each new line is a different sample. Example below:
@@ -372,8 +371,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.aug_prob = audio_conf.get('noise_prob')
         self.aug_prob_spect = audio_conf.get('aug_prob_spect')
         self.phoneme_count = audio_conf.get('phoneme_count',0) # backward compatible
-        if self.phoneme_counts>0:
-            self.phoneme_label_parser = phoneme_label_parser     
+        if self.phoneme_count>0:
+            self.phoneme_label_parser = PhonemeLabels(audio_conf.get('phoneme_map',None))     
     
         if self.aug_prob>0:
             print('Using sound augs!')            
