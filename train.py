@@ -14,11 +14,9 @@ from warpctc_pytorch import CTCLoss
 from decoder import GreedyDecoder
 from model import DeepSpeech, supported_rnns
 from data.utils import reduce_tensor, get_cer_wer
-from data.data_loader_aug import (AudioDataLoader,
-                                  SpectrogramDataset,
+from data.data_loader_aug import (SpectrogramDataset,
                                   BucketingSampler,
                                   DistributedBucketingSampler)
-
 
 tq = tqdm.tqdm
 
@@ -339,7 +337,16 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
     model.eval()
     with torch.no_grad():
         for i, data in tq(enumerate(test_loader), total=len(test_loader)):
-            inputs, targets, filenames, input_percentages, target_sizes = data
+            if args.use_phonemes:
+                (inputs,
+                 targets,
+                 filenames,
+                 input_percentages,
+                 target_sizes,
+                 phoneme_targets,
+                 phoneme_target_sizes) = data
+            else:
+                inputs, targets, filenames, input_percentages, target_sizes = data
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
 
             # unflatten targets
@@ -557,7 +564,16 @@ class Trainer:
         return 100. * self.train_wer / (self.num_words or 1)
 
     def train_batch(self, epoch, batch_id, data):
-        inputs, targets, filenames, input_percentages, target_sizes = data
+        if args.use_phonemes:
+            (inputs,
+             targets,
+             filenames,
+             input_percentages,
+             target_sizes,
+             phoneme_targets,
+             phoneme_target_sizes) = data
+        else:
+            inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
         # measure data loading time
         data_time.update(time.time() - self.end)
@@ -565,7 +581,13 @@ class Trainer:
         inputs = inputs.to(device)
         input_sizes = input_sizes.to(device)
 
-        logits, probs, output_sizes = model(inputs, input_sizes)
+        if args.use_phonemes:
+            (logits, probs,
+             output_sizes,
+             phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
+        else:
+            logits, probs, output_sizes = model(inputs, input_sizes)
+
         assert logits.is_cuda
         assert probs.is_cuda
         assert output_sizes.is_cuda
@@ -593,7 +615,10 @@ class Trainer:
             self.train_cer += cer
             self.num_words += wer_ref
             self.num_chars += cer_ref
-
+        
+        if args.use_phonemes:
+            phoneme_logits = phoneme_logits.transpose(0, 1)  # TxNxH
+        
         logits = logits.transpose(0, 1)  # TxNxH
 
         if torch.isnan(logits).any():  # and args.nan == 'zero':
@@ -601,9 +626,22 @@ class Trainer:
             print("WARNING: Working around NaNs in data")
             logits[torch.isnan(logits)] = 0
 
-        loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
-        loss = loss / inputs.size(0)  # average the loss by minibatch
-        loss = loss.to(device)
+        if args.use_phonemes:
+            # output_sizes should be the same 
+            # for phoneme and non-phonemes
+            loss = criterion(logits,
+                             targets,
+                             output_sizes.cpu(),
+                             target_sizes) + criterion(phoneme_logits,
+                                                       phoneme_targets,
+                                                       output_sizes.cpu(),
+                                                       phoneme_target_sizes)
+            loss = loss / inputs.size(0)  # average the loss by minibatch
+            loss = loss.to(device)            
+        else:
+            loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
+            loss = loss / inputs.size(0)  # average the loss by minibatch
+            loss = loss.to(device)
 
         inf = float("inf")
         if args.distributed:
@@ -793,6 +831,13 @@ def train(from_epoch, from_iter, from_checkpoint):
 
 if __name__ == '__main__':
     args = parser.parse_args()
+    
+    # упячка, я идиот, убейте меня кто-нибудь
+    if args.use_phonemes:
+        from data.data_loader_aug import AudioDataLoaderPhoneme as AudioDataLoader
+    else:
+        from data.data_loader_aug import AudioDataLoader
+    
     args.distributed = args.world_size > 1
     args.model_path = os.path.join(args.save_folder, 'best.model')
 

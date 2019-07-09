@@ -600,6 +600,40 @@ def _collate_fn(batch):
     return inputs, targets, filenames, input_percentages, target_sizes
 
 
+def _collate_fn_phoneme(batch):
+    def func(p):
+        return p[0].size(1)
+
+    batch = sorted(batch, key=lambda sample: sample[0].size(1), reverse=True)
+    longest_sample = max(batch, key=func)[0]
+    freq_size = longest_sample.size(0)
+    minibatch_size = len(batch)
+    max_seqlength = longest_sample.size(1)
+    inputs = torch.zeros(minibatch_size, 1, freq_size, max_seqlength)
+    input_percentages = torch.FloatTensor(minibatch_size)
+    target_sizes = torch.IntTensor(minibatch_size)
+    phoneme_target_sizes = torch.IntTensor(minibatch_size)
+    targets = []
+    phoneme_targets = []
+    filenames = []
+    for x in range(minibatch_size):
+        sample = batch[x]
+        tensor = sample[0]
+        target = sample[1]
+        phoneme_target = sample[3]
+        filenames.append(sample[2])
+        seq_length = tensor.size(1)
+        inputs[x][0].narrow(1, 0, seq_length).copy_(tensor)
+        input_percentages[x] = seq_length / float(max_seqlength)
+        target_sizes[x] = len(target)
+        phoneme_target_sizes[x] = len(phoneme_target)
+        targets.extend(target)
+        phoneme_targets.extend(phoneme_target)
+    targets = torch.IntTensor(targets)
+    phoneme_targets = torch.IntTensor(phoneme_targets)
+    return inputs, targets, filenames, input_percentages, target_sizes, phoneme_targets, phoneme_target_sizes
+
+
 class AudioDataLoader(DataLoader):
     def __init__(self, *args, **kwargs):
         """
@@ -607,6 +641,15 @@ class AudioDataLoader(DataLoader):
         """
         super(AudioDataLoader, self).__init__(*args, **kwargs)
         self.collate_fn = _collate_fn
+
+        
+class AudioDataLoaderPhoneme(DataLoader):
+    def __init__(self, *args, **kwargs):
+        """
+        Creates a data loader for AudioDatasets.
+        """
+        super(AudioDataLoader, self).__init__(*args, **kwargs)
+        self.collate_fn = _collate_fn_phoneme
 
 
 class BucketingSampler(Sampler):
