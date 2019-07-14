@@ -603,7 +603,9 @@ def _collate_fn(batch):
 def _collate_fn_phoneme(batch):
     def func(p):
         return p[0].size(1)
-
+    # simple failsafe for validation
+    if len(batch[0])==3:
+        return _collate_fn(batch)
     batch = sorted(batch, key=lambda sample: sample[0].size(1), reverse=True)
     longest_sample = max(batch, key=func)[0]
     freq_size = longest_sample.size(0)

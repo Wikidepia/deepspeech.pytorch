@@ -337,7 +337,8 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
     model.eval()
     with torch.no_grad():
         for i, data in tq(enumerate(test_loader), total=len(test_loader)):
-            if args.use_phonemes:
+            # use if full phoneme decoding will be required
+            if False:
                 (inputs,
                  targets,
                  filenames,
@@ -456,7 +457,8 @@ def calculate_trainval_quality_metrics(checkpoint,
     model.eval()    
     with torch.no_grad():
         for i, data in tq(enumerate(loader), total=len(loader)):
-            if args.use_phonemes:
+            # use if full phoneme decoding will be required
+            if False:
                 (inputs,
                  targets,
                  filenames,
@@ -990,7 +992,9 @@ if __name__ == '__main__':
     test_audio_conf = {**audio_conf,
                        'noise_prob': 0,
                        'aug_prob_8khz':0,
-                       'aug_prob_spect':0}
+                       'aug_prob_spect':0,
+                       'phoneme_count':0,
+                       'phoneme_map':None}
    
     print('Test audio conf')    
     print(test_audio_conf)
