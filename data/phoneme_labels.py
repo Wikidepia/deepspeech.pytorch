@@ -1,3 +1,4 @@
+import itertools
 from string import punctuation, printable
 
 punctuation = punctuation.replace('-','')

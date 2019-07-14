@@ -648,7 +648,7 @@ class AudioDataLoaderPhoneme(DataLoader):
         """
         Creates a data loader for AudioDatasets.
         """
-        super(AudioDataLoader, self).__init__(*args, **kwargs)
+        super(AudioDataLoaderPhoneme, self).__init__(*args, **kwargs)
         self.collate_fn = _collate_fn_phoneme
 
 

@@ -445,7 +445,7 @@ class DeepSpeech(nn.Module):
         model.load_state_dict(package['state_dict'])
         return model
     
-    @classmethod
+    @staticmethod
     def add_phonemes_to_model(model,
                               phoneme_count=0):
         '''Add phonemes to an already pre-trained model

@@ -882,7 +882,8 @@ if __name__ == '__main__':
             model = DeepSpeech.add_phonemes_to_model(model,
                                                      len(phoneme_map))
             audio_conf['phoneme_count'] = len(phoneme_map)
-            audio_conf['phoneme_map'] = phoneme_map            
+            audio_conf['phoneme_map'] = phoneme_map
+            model.phoneme_count = len(phoneme_map)
             
         # REMOVE LATER
         # audio_conf['noise_dir'] = '../data/augs/*.wav'
@@ -969,7 +970,10 @@ if __name__ == '__main__':
     test_audio_conf = {**audio_conf,
                        'noise_prob': 0,
                        'aug_prob_8khz':0,
-                       'aug_prob_spect':0}
+                       'aug_prob_spect':0,
+                       'phoneme_count':0,
+                       'phoneme_map':None}
+   
     print('Test audio conf')    
     print(test_audio_conf)
     # no augs on test
