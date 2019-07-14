@@ -372,7 +372,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.aug_prob_spect = audio_conf.get('aug_prob_spect')
         self.phoneme_count = audio_conf.get('phoneme_count',0) # backward compatible
         if self.phoneme_count>0:
-            self.phoneme_label_parser = PhonemeLabels(audio_conf.get('phoneme_map',None))     
+            self.phoneme_label_parser = PhonemeLabels(audio_conf.get('phoneme_map',None)) 
     
         if self.aug_prob>0:
             print('Using sound augs!')            
