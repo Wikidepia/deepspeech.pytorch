@@ -358,7 +358,12 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
 
             inputs = inputs.to(device)
 
-            logits, probs, output_sizes = model(inputs, input_sizes)
+            if args.use_phonemes:
+                (logits, probs,
+                 output_sizes,
+                 phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
+            else:            
+                logits, probs, output_sizes = model(inputs, input_sizes)
 
             loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -451,7 +456,17 @@ def calculate_trainval_quality_metrics(checkpoint,
     model.eval()    
     with torch.no_grad():
         for i, data in tq(enumerate(loader), total=len(loader)):
-            inputs, targets, filenames, input_percentages, target_sizes = data
+            if args.use_phonemes:
+                (inputs,
+                 targets,
+                 filenames,
+                 input_percentages,
+                 target_sizes,
+                 phoneme_targets,
+                 phoneme_target_sizes) = data
+            else:            
+                inputs, targets, filenames, input_percentages, target_sizes = data
+                
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
 
             # unflatten targets
@@ -463,7 +478,12 @@ def calculate_trainval_quality_metrics(checkpoint,
 
             inputs = inputs.to(device)
 
-            logits, probs, output_sizes = model(inputs, input_sizes)
+            if args.use_phonemes:
+                (logits, probs,
+                 output_sizes,
+                 phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
+            else:             
+                logits, probs, output_sizes = model(inputs, input_sizes)
 
             loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -970,9 +990,7 @@ if __name__ == '__main__':
     test_audio_conf = {**audio_conf,
                        'noise_prob': 0,
                        'aug_prob_8khz':0,
-                       'aug_prob_spect':0,
-                       'phoneme_count':0,
-                       'phoneme_map':None}
+                       'aug_prob_spect':0}
    
     print('Test audio conf')    
     print(test_audio_conf)
