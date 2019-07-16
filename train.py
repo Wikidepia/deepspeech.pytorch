@@ -389,7 +389,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 if x < 1:
                     print("CER: {:6.2f}% WER: {:6.2f}% Filename: {}".format(cer/cer_ref*100, wer/wer_ref*100, filenames[x]))
                     print('Reference:', reference, '\nTranscript:', transcript)
-                
+
                 times_used = test_dataset.curriculum[filenames[x]]['times_used']+1
                 test_dataset.update_curriculum(filenames[x],
                                                reference, transcript,
@@ -424,9 +424,9 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
         checkpoint_plots.wer_results[checkpoint] = val_wer
         checkpoint_plots.cer_results[checkpoint] = val_cer
         checkpoint_plots.epochs[checkpoint] = checkpoint + 1
-        
+
         plots.plot_progress(epoch, train_loss, train_cer, train_wer)
-        checkpoint_plots.plot_progress(checkpoint, val_loss, val_cer, val_wer)            
+        checkpoint_plots.plot_progress(checkpoint, val_loss, val_cer, val_wer)
 
         if args.checkpoint_anneal != 1.0:
             global lr_plots
@@ -436,7 +436,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
             lr_plots.loss_results[zero_loss] = val_loss
             lr_plots.epochs[zero_loss] = get_lr()
             lr_plots.plot_progress(checkpoint, val_loss, val_cer, val_wer)
-    
+
     # only if trainval manifest provided
     # separate scope not to mess with general flow too much
     if args.train_val_manifest != '':
@@ -444,7 +444,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                                            epoch,
                                            trainval_loader,
                                            trainval_checkpoint_plots)
-            
+
     return val_wer, val_cer
 
 
@@ -454,7 +454,7 @@ def calculate_trainval_quality_metrics(checkpoint,
                                        plots_handle):
     val_cer_sum, val_wer_sum, val_loss_sum = 0, 0, 0
     num_chars, num_words, num_losses = 0, 0, 0
-    model.eval()    
+    model.eval()
     with torch.no_grad():
         for i, data in tq(enumerate(loader), total=len(loader)):
             # use if full phoneme decoding will be required
@@ -466,9 +466,9 @@ def calculate_trainval_quality_metrics(checkpoint,
                  target_sizes,
                  phoneme_targets,
                  phoneme_target_sizes) = data
-            else:            
+            else:
                 inputs, targets, filenames, input_percentages, target_sizes = data
-                
+
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
 
             # unflatten targets
@@ -484,7 +484,7 @@ def calculate_trainval_quality_metrics(checkpoint,
                 (logits, probs,
                  output_sizes,
                  phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
-            else:             
+            else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
             loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)

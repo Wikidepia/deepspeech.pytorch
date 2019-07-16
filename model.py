@@ -356,11 +356,11 @@ class DeepSpeech(nn.Module):
         lengths = lengths.cpu().int()
         output_lengths = self.get_seq_lens(lengths).cuda()
 
-        if self._rnn_type in ['cnn','glu_small','glu_large','large_cnn',
+        if self._rnn_type in ['cnn', 'glu_small', 'glu_large', 'large_cnn',
                               'cnn_residual']:
             x = x.squeeze(1)
             x = self.rnns(x)
-            if hasattr(self, 'phoneme_count'):
+            if hasattr(self, '_phoneme_count'):
                 x_phoneme = self.fc_phoneme(x)
                 x_phoneme = x_phoneme.transpose(1, 2).transpose(0, 1).contiguous()
             x = self.fc(x)
@@ -392,7 +392,7 @@ class DeepSpeech(nn.Module):
         if DEBUG: assert outs.is_cuda
         if DEBUG: assert output_lengths.is_cuda
 
-        if hasattr(self, 'phoneme_count'):
+        if hasattr(self, '_phoneme_count'):
             x_phoneme = x_phoneme.transpose(0, 1)
             outs_phoneme = F.softmax(x_phoneme, dim=-1)
             # phoneme outputs will have the same length
