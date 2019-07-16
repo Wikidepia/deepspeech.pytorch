@@ -181,9 +181,10 @@ DEBUG = 0
 
 
 class DeepSpeech(nn.Module):
-    def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=6, audio_conf=None,
+    def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=6,
+                 audio_conf=None,
                  bidirectional=True, context=20, bnm=0.1,
-                 dropout=0,cnn_width=256,
+                 dropout=0, cnn_width=256,
                  phoneme_count=0
                  ):
         super(DeepSpeech, self).__init__()
@@ -199,10 +200,10 @@ class DeepSpeech(nn.Module):
         self._labels = labels
         self._bidirectional = bidirectional
         self._bnm = bnm
-        self._dropout=dropout
-        self._cnn_width=cnn_width
-        if phoneme_count>0:
-            self._phoneme_count=phoneme_count
+        self._dropout = dropout
+        self._cnn_width = cnn_width
+        if phoneme_count > 0:
+            self._phoneme_count = phoneme_count
 
         sample_rate = self._audio_conf.get("sample_rate", 16000)
         window_size = self._audio_conf.get("window_size", 0.02)
@@ -218,7 +219,7 @@ class DeepSpeech(nn.Module):
             nn.Hardtanh(0, 20, inplace=True),
         ))
 
-        if self._rnn_type == 'cnn': # wav2letter with some features
+        if self._rnn_type == 'cnn': #  wav2letter with some features
             size = rnn_hidden_size
             modules = Wav2Letter(
                 DotDict({
@@ -236,31 +237,32 @@ class DeepSpeech(nn.Module):
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
-        elif self._rnn_type == 'cnn_residual': # wav2letter with some features
+        elif self._rnn_type == 'cnn_residual': #  wav2letter with some features
             size = rnn_hidden_size
             self.rnns = ResidualWav2Letter(
                 DotDict({
-                    'size':rnn_hidden_size, # here it defines model epilog size
-                    'bnorm':True,
-                    'bnm':self._bnm,
-                    'dropout':dropout,
-                    'cnn_width':self._cnn_width, # cnn filters 
-                    'not_glu':self._bidirectional, # glu or basic relu
-                    'repeat_layers':self._hidden_layers, # depth, only middle part
-                    'kernel_size':7,
-                    'se_ratio':0.25,
-                    'skip':True
-                })                
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters 
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.25,
+                    'skip': True
+                })
             )
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
             # make checkpoints reverse compatible
-            if hasattr(self, 'phoneme_count'):
+            if hasattr(self, '_phoneme_count'):
                 self.fc_phoneme = nn.Sequential(
-                    nn.Conv1d(in_channels=size, out_channels=self.phoneme_count, kernel_size=1)
-                )                          
-        elif self._rnn_type == 'cnn_jasper': # http://arxiv.org/abs/1904.03288
+                    nn.Conv1d(in_channels=size,
+                              out_channels=self._phoneme_count, kernel_size=1)
+                )
+        elif self._rnn_type == 'cnn_jasper': #  http://arxiv.org/abs/1904.03288
             size = 1024
             self.rnns = JasperNet(
                 DotDict({
@@ -317,7 +319,7 @@ class DeepSpeech(nn.Module):
             )
         elif self._rnn_type == 'glu_flexible':
             raise NotImplementedError("Customizable GLU not yet implemented") 
-        else: # original ds2
+        else:  # original ds2
             # Based on above convolutions and spectrogram size using conv formula (W - F + 2P)/ S+1
             rnn_input_size = int(math.floor((sample_rate * window_size + 1e-2) / 2) + 1)
             rnn_input_size = int(math.floor(rnn_input_size + 2 * 20 - 41 + 1e-2) / 2 + 1)
@@ -389,7 +391,7 @@ class DeepSpeech(nn.Module):
         outs = F.softmax(x, dim=-1)
         if DEBUG: assert outs.is_cuda
         if DEBUG: assert output_lengths.is_cuda
-        
+
         if hasattr(self, 'phoneme_count'):
             x_phoneme = x_phoneme.transpose(0, 1)
             outs_phoneme = F.softmax(x_phoneme, dim=-1)
@@ -430,34 +432,33 @@ class DeepSpeech(nn.Module):
     @classmethod
     def load_model_package(cls, package):
         kwargs = {
-            'rnn_hidden_size':package['hidden_size'],
-            'nb_layers':package['hidden_layers'],
-            'labels':package['labels'],
-            'audio_conf':package['audio_conf'],
-            'rnn_type':package['rnn_type'],
-            'bnm':package.get('bnm', 0.1),
-            'bidirectional':package.get('bidirectional', True),
-            'dropout':package.get('dropout', 0),
-            'cnn_width':package.get('cnn_width',0),
-            'phoneme_count':package.get('phoneme_count',0)        
+            'rnn_hidden_size': package['hidden_size'],
+            'nb_layers': package['hidden_layers'],
+            'labels': package['labels'],
+            'audio_conf': package['audio_conf'],
+            'rnn_type': package['rnn_type'],
+            'bnm': package.get('bnm', 0.1),
+            'bidirectional': package.get('bidirectional', True),
+            'dropout': package.get('dropout', 0),
+            'cnn_width': package.get('cnn_width', 0),
+            'phoneme_count': package.get('phoneme_count', 0)
         }
-        model = cls(**kwargs)            
+        model = cls(**kwargs)
         model.load_state_dict(package['state_dict'])
         return model
-    
+
     @staticmethod
     def add_phonemes_to_model(model,
                               phoneme_count=0):
         '''Add phonemes to an already pre-trained model
         '''
-        model._phoneme_count=phoneme_count
+        model._phoneme_count = phoneme_count
         model.fc_phoneme = nn.Sequential(
             nn.Conv1d(in_channels=model._hidden_size,
                       out_channels=model._phoneme_count,
                       kernel_size=1)
         )
         return model
- 
 
     @staticmethod
     def serialize(model, optimizer=None, epoch=None, iteration=None, loss_results=None, checkpoint=None,

@@ -42,26 +42,28 @@ if __name__ == '__main__':
                          map_location=lambda storage, loc: storage)
     # model = DeepSpeech.load_model(args.model_path)
     model = DeepSpeech.load_model_package(package)
-    
+
     device = torch.device("cuda" if args.cuda else "cpu")
     model = model.to(device)
 
     labels = DeepSpeech.get_labels(model)
     audio_conf = DeepSpeech.get_audio_conf(model)
-    
+
     if args.data_parallel:
         model = torch.nn.DataParallel(model).to(device)
-        print('Using DP')    
-    model.eval()        
-    
+        print('Using DP')
+    model.eval()
+
     print(model)
-    
+
     # zero-out the aug bits
     audio_conf = {**audio_conf,
                   'noise_prob': 0,
-                  'aug_prob_8khz':0,
-                  'aug_prob_spect':0}
-    
+                  'aug_prob_8khz': 0,
+                  'aug_prob_spect': 0,
+                  'phoneme_count': 0,
+                  'phoneme_map': None}
+
     print(audio_conf)
 
     report_file = None
@@ -87,7 +89,7 @@ if __name__ == '__main__':
                                       labels=labels,
                                       normalize=args.norm,
                                       augment=False)
-    
+
     # import random;random.shuffle(test_dataset.ids)
 
     test_loader = AudioDataLoader(test_dataset, batch_size=args.batch_size,
@@ -96,7 +98,7 @@ if __name__ == '__main__':
     total_cer, total_wer, num_tokens, num_chars = 0, 0, 0, 0
     # check calculation
     avg_total_wer, avg_total_cer = 0, 0
-    
+
     processed_files = []
     for i, data in tqdm(enumerate(test_loader), total=len(test_loader)):
         inputs, targets, filenames, input_percentages, target_sizes = data
@@ -112,9 +114,13 @@ if __name__ == '__main__':
         inputs = inputs.to(device)
 
         # print(inputs.shape, inputs.is_cuda, input_sizes.shape, input_sizes.is_cuda)
-        out0, out, output_sizes = model(inputs, input_sizes)
-
-        del inputs, targets, input_percentages, target_sizes
+        model_outputs = model(inputs, input_sizes)
+        # ignore phoneme outputs
+        if len(model_outputs) == 4:
+            out0, out, output_sizes, _ = model_output
+        else:
+            out0, out, output_sizes = model_outputs
+        del inputs, targets, input_percentages, target_sizes, model_outputs
 
         if decoder is None: continue
         decoded_output, _ = decoder.decode(out.data, output_sizes.data)
@@ -184,11 +190,11 @@ if __name__ == '__main__':
             total_cer += cer
             num_tokens += wer_ref
             num_chars += cer_ref
-            
-            avg_total_wer += wer / wer_ref
-            avg_total_cer += cer / cer_ref            
 
-            
+            avg_total_wer += wer / wer_ref
+            avg_total_cer += cer / cer_ref
+
+
         del out, out0, output_sizes, out_raw_cpu, out_softmax_cpu
         if (i + 1) % 5 == 0 or args.batch_size == 1:
             gc.collect()
@@ -198,16 +204,16 @@ if __name__ == '__main__':
         wer_avg = float(total_wer) / num_tokens
         cer_avg = float(total_cer) / num_chars
         wer_avg2 = avg_total_wer / len(test_loader.dataset)
-        cer_avg2 = avg_total_cer / len(test_loader.dataset)        
-        
+        cer_avg2 = avg_total_cer / len(test_loader.dataset)
+
         print('Test Summary \t'
               'Average WER {wer:.3f}\t'
               'Average CER {cer:.3f}\t'.format(wer=wer_avg * 100, cer=cer_avg * 100))
-        
+
         print('Alternative Test Summary \t'
               'Average WER {wer:.3f}\t'
-              'Average CER {cer:.3f}\t'.format(wer=wer_avg2 * 100, cer=cer_avg2 * 100))        
-        
+              'Average CER {cer:.3f}\t'.format(wer=wer_avg2 * 100, cer=cer_avg2 * 100))
+
     if args.output_path:
         import pickle
         with open(args.output_path, 'w') as f:
