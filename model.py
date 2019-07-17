@@ -265,18 +265,144 @@ class DeepSpeech(nn.Module):
         elif self._rnn_type == 'cnn_jasper': #  http://arxiv.org/abs/1904.03288
             size = 1024
             self.rnns = JasperNet(
-                DotDict({
-                    'input_channels':161,
-                    'blocks':5,          
-                    'sub_blocks':3,
-                    'channels':[256,384,512,640,768],
-                    'kernels':[11,13,17,21,25],
-                    'prolog_dropout':0.8,
-                    'block_dropouts':0.2,
-                    'epilog_dropout':0.3,
-                    'nonlinearity':nn.ReLU(inplace=True),
-                    'se_ratios':[0.25,0.25,0.25,0.25,0.25],
-                })                
+                DotDict(config = {
+                                'dense_residual':True,
+                                'input_channels':161,
+                                'bn_momentum':0.1,
+                                'bn_eps':1e-05,
+                                'block_configs':[
+        {
+        'repeat':1,
+        'channels':256,
+        'kernel_size':11,
+        'stride':2,
+        'dilation':1,
+        'dropout':0.2,
+        'residual':False,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':5,
+        'channels':256,
+        'kernel_size':11,
+        'stride':1,
+        'dilation':1,
+        'dropout':0.2,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':5,
+        'channels':256,
+        'kernel_size':11,
+        'stride':1,
+        'dilation':1,
+        'dropout':0.2,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':5,
+        'channels':384,
+        'kernel_size':13,
+        'stride':1,
+        'dilation':1,
+        'dropout':0.2,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':5,
+        'channels':384,
+        'kernel_size':13,
+        'stride':1,
+        'dilation':1,
+        'dropout':0.2,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':5,
+        'channels':512,
+        'kernel_size':17,
+        'stride':1,
+        'dilation':1,
+        'dropout':0.2,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':5,
+        'channels':512,
+        'kernel_size':17,
+        'stride':1,
+        'dilation':1,
+        'dropout':0.2,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':5,
+        'channels':640,
+        'kernel_size':21,
+        'stride':1,
+        'dilation':1,
+        'dropout':0.3,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':5,
+        'channels':640,
+        'kernel_size':21,
+        'stride':1,
+        'dilation':1,
+        'dropout':0.3,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':5,
+        'channels':768,
+        'kernel_size':25,
+        'stride':1,
+        'dilation':1,
+        'dropout':0.3,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':5,
+        'channels':768,
+        'kernel_size':25,
+        'stride':1,
+        'dilation':1,
+        'dropout':0.3,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':1,
+        'channels':896,
+        'kernel_size':29,
+        'stride':1,
+        'dilation':2,
+        'dropout':0.4,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        },
+        {
+        'repeat':1,
+        'channels':1024,
+        'kernel_size':1,
+        'stride':1,
+        'dilation':1,
+        'dropout':0.4,
+        'residual':True,
+        'activation_fn':nn.ReLU
+        }
+                                                ]
+                                   })                
             )
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
@@ -357,7 +483,7 @@ class DeepSpeech(nn.Module):
         output_lengths = self.get_seq_lens(lengths).cuda()
 
         if self._rnn_type in ['cnn', 'glu_small', 'glu_large', 'large_cnn',
-                              'cnn_residual']:
+                              'cnn_residual', 'cnn_jasper']:
             x = x.squeeze(1)
             x = self.rnns(x)
             if hasattr(self, '_phoneme_count'):
@@ -763,183 +889,140 @@ class ResCNNBlock(nn.Module):
 
 
 # http://arxiv.org/abs/1904.03288
-class JasperNet(nn.Module):
-    def __init__(self,
-                 config):
-        self.prolog = JasperProlog(config)
-        self.body = JasperBody(config)
-        self.epilog = JasperEpilog(config)
+class Jasper_conv_block(nn.Module):
+    def __init__(self, 
+                 repeat, 
+                 in_channels, 
+                 out_channels, 
+                 kernel_size, 
+                 stride=1, 
+                 dilation=1, 
+                 dropout=0, 
+                 residual=True, 
+                 bn_momentum=0.1, 
+                 bn_eps=1e-05, 
+                 activation_fn=None):
+        super(conv_block, self).__init__()
         
-    def forward(self, x):
-        x = self.prolog(x)
-        x = self.body(x)
-        x = self.epilog(x)
-        return x         
-
-
-class JasperCNNBlock(nn.Module):
-    def __init__(self,
-                 in_channels=1,
-                 out_channels=400,
-                 kernel_size=11,
-                 stride=1,
-                 padding=0,
-                 dropout=0.1,
-                 nonlinearity=nn.ReLU(inplace=True),
-                 bias=True,
-                 se_ratio=0,
-                 skip=False
-                 ):
-        super(JasperCNNBlock, self).__init__()       
+        self.bn =nn.ModuleList([nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum) for i in range(repeat)])
         
-        self.conv = nn.Conv1d(in_channels,
-                              out_channels,
-                              kernel_size,
-                              stride=stride,
-                              padding=padding,
-                              bias=bias)
-        self.norm = nn.BatchNorm1d(out)
-        self.nonlinearity = nonlinearity
-        self.dropout = nn.Dropout(dropout)
-        self.se_ratio = se_ratio
-        self.has_se = (self.se_ratio is not None) and (0 < self.se_ratio <= 1)
-        self.skip = skip
-        if self.skip:
-            self.skip_block = nn.Sequential(
-                nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=1),
-                nn.BatchNorm1d(out),
-            )
-        # Squeeze and Excitation layer, if required
-        if self.has_se:
-            num_squeezed_channels = max(1, int(_in * self.se_ratio))
-            self._se_reduce = Conv1dSamePadding(in_channels=out, out_channels=num_squeezed_channels, kernel_size=1)
-            self._se_expand = Conv1dSamePadding(in_channels=num_squeezed_channels, out_channels=out, kernel_size=1)        
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.residual = residual
         
-    def forward(self, x,
-                residual=None):
-        skip=None
-        if self.skip:
-            skip = self.skip_block(x)
-        x = self.conv(x)
-        x = self.norm(x)
-        if residual:
-            x = x + residual        
-        x = self.nonlinearity(x)
-        x = self.dropout(x)
-        if self.has_se:
-            x_squeezed = F.adaptive_avg_pool1d(x, 1) # channel dimension
-            x_squeezed = self._se_expand(relu_fn(self._se_reduce(x_squeezed)))
-            x = torch.sigmoid(x_squeezed) * x                
-        return x,skip         
+        module_list = []
+        module_list.append(JasperConv1dSame(self.in_channels, self.out_channels, kernel_size, stride, dilation))
+        for rep in range(repeat-1):
+            module_list.append(JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation))
 
-
-class JasperBlock(nn.Module):
-    def __init__(self,
-                 sub_blocks=5,
-                 in_channels=256,
-                 out_channels=256,
-                 kernel_size=11,
-                 dropout=0.1,
-                 nonlinearity=nn.ReLU(inplace=True),
-                 se_ratio=0.25,
-                 ):
-        super(JasperProlog, self).__init__()
-        # upsampling 
-        self.sub_blocks = nn.ModuleList([
-            JasperCNNBlock(
-                in_channels=in_channels if i==0 else out_channels,
-                out_channels=out_channels,
-                kernel_size=kernel_size,
-                padding=kernel_size//2,
-                dropout=dropout,
-                nonlinearity=nonlinearity,
-                se_ratio=se_ratio,
-                skip=True if i==0 else False
-            )
-            for i in range(0,sub_blocks)
-        ]) 
-    def forward(self, x):
-        # can be easily extended into densenet
-        for i, sub_block in enumerate(self.sub_blocks):
-            if i==0:
-                x, residual = sub_block(x,None)
-            elif i==len(self.convs)-1:
-                x, _ = sub_block(x,residual)
-            else:
-                x, _ = sub_block(x,None)
-        return x    
-
-  
-class JasperBody(nn.Module):
-    def __init__(self, config):
-        super(JasperProlog, self).__init__()
-        self.convs = nn.ModuleList([
-            JasperBlock(
-                sub_blocks=config.sub_blocks,
-                in_channels=config.channels[i],
-                out_channels=config.channels[i+1],
-                kernel_size=config.kernels[i],
-                dropout=config.block_dropouts[i],
-                nonlinearity=config.nonlinearity,
-                se_ratio=config.se_ratios[i],
-            )
-            for i in range(0,config.blocks)
-        ])         
-    def forward(self, x):
-        for block in self.blocks:
-            x = block(x)
-        return x     
-
-
-class JasperProlog(nn.Module):
-    def __init__(self, config):
-        super(JasperProlog, self).__init__()       
-        self.blocks =  JasperCNNBlock(
-            in_channels=config.input_channels,
-            out_channels=config.channels[0],
-            kernel_size=config.kernels[0],
-            stride=2,
-            padding=config.kernels[0]//2,
-            dropout=config.prolog_dropout,
-            nonlinearity=config.nonlinearity,
-            bias=True,
-            se_ratio=0,
-            skip=False
-        )
-    def forward(self, x):
-        return self.blocks(x)
-
+        self.module_list = nn.ModuleList(module_list)
+        
+        self.activation_fn = activation_fn()
+        self.dropout = nn.Dropout(p=dropout)
+            
+    def forward(self, x, res_input=0):
+        for i, module in enumerate(self.module_list):
+            x = module(x)
+            x = self.bn[i](x)
+            if i == (len(self.module_list)-1):
+                x = x + res_input
+            x = self.activation_fn(x)
+            x = self.dropout(x)
+            return x
     
-class JasperEpilog(nn.Module):
-    def __init__(self, config):
-        super(JasperEpilog, self).__init__()       
-        self.blocks =  nn.Sequential(
-            JasperCNNBlock(
-                in_channels=config.channels[-1],
-                out_channels=896,
-                kernel_size=29,
-                stride=2,
-                padding=29//2,
-                dropout=config.epilog_dropout,
-                nonlinearity=config.nonlinearity,
-                bias=True,
-                se_ratio=0,
-                skip=False
-            ),
-            JasperCNNBlock(
-                in_channels=896,
-                out_channels=1024,
-                kernel_size=1,
-                stride=1,
-                dropout=config.epilog_dropout,
-                nonlinearity=config.nonlinearity,
-                bias=True,
-                se_ratio=0,
-                skip=False
-            ),            
-        )        
+    
+    
+    
+class JasperConv1dSame(nn.Conv1d):
+    def __init__(self, 
+                 in_channels, 
+                 out_channels, 
+                 kernel_size, 
+                 stride=1, 
+                 dilation=1, 
+                 groups=1, 
+                 bias=True):
+        super().__init__(in_channels, out_channels, kernel_size, stride, 0, dilation, groups, bias)
+    
     def forward(self, x):
-        return self.blocks(x)
+        out_len = x.shape[2]
+        padding = math.ceil(((out_len - 1) * self.stride[0] + self.kernel_size[0] + \
+                             (self.kernel_size[0] - 1) * (self.dilation[0] -1) - out_len))
+
+        if padding > 0:
+            x = F.pad(x, (padding//2, padding-padding//2))
+        return F.conv1d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+    
+    
+    
+    
+class JasperNet(nn.Module):
+    def __init__(self, config):
+        super(JasperNet, self).__init__()
+        
+        self.dense_residual = config['dense_residual']
+        block_list = []
+        all_skip_convs = []
+        all_skip_bns = []
+        for i, block_config in enumerate(config['block_configs']):
+
+            repeat = block_config['repeat']
+            in_channels = config['input_channels'] if i==0 else config['block_configs'][i-1]['channels']
+            out_channels = block_config['channels']
+            kernel_size = block_config['kernel_size']
+            stride = block_config['stride']
+            dilation = block_config['dilation']
+            bn_momentum = config['bn_momentum']
+            bn_eps = config['bn_eps']
+            dropout = block_config['dropout']
+            residual = block_config['residual']
+            activation_fn = block_config['activation_fn']
+
+            block_list.append(Jasper_conv_block(repeat=repeat, in_channels=in_channels, out_channels=out_channels,
+                                                kernel_size=kernel_size, stride=stride, dilation=dilation,
+                                                dropout=dropout, residual=residual, bn_momentum=bn_momentum, 
+                                                bn_eps=bn_eps, activation_fn=activation_fn
+                                               )
+                             )
+            
+            skip_convs = []
+            skip_bns = []
+            if residual:
+                if self.dense_residual:
+                    skip_convs = [nn.Conv1d(i.in_channels, out_channels, 1, bias=False) for i in block_list if i.residual]
+                    skip_bns = [nn.BatchNorm1d(out_channels, bn_eps, bn_momentum) for i in block_list if i.residual]
+                else:
+                    skip_convs.append(nn.Conv1d(in_channels, out_channels, 1, bias=False))
+                    skip_bns.append(nn.BatchNorm1d(out_channels, bn_eps, bn_momentum))
+                    
+            skip_convs = nn.ModuleList(skip_convs)
+            skip_bns = nn.ModuleList(skip_bns)
+            
+            all_skip_convs.append(skip_convs)
+            all_skip_bns.append(skip_bns)
+            
+        self.block_list = nn.ModuleList(block_list)
+        self.all_skip_convs = nn.ModuleList(all_skip_convs)
+        self.all_skip_bns = nn.ModuleList(all_skip_bns)
+    
+    def forward(self, input_):
+        residuals = []
+        for i, block in enumerate(self.block_list):
+            res = 0
+            
+            if block.residual:
+                if self.dense_residual:
+                    residuals.append(x)
+                else:
+                    residuals = [x]
+                assert len(self.all_skip_convs[i]) == len(residuals)
+                for skip_conv, skip_bn, residual in zip(self.all_skip_convs[i], self.all_skip_bns[i], residuals):
+                    res += skip_bn(skip_conv(residual))
+                x = block(x, res)
+            else:
+                x = block(x, 0)
+                
+        return x
     
     
 class SmallGLU(nn.Module):
