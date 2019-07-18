@@ -964,26 +964,23 @@ class JasperNet(nn.Module):
         block_list = []
         all_skip_convs = []
         all_skip_bns = []
-        for i, block_config in enumerate(config['block_configs']):
+        for i, repeat in enumerate(config['repeats']):
 
-            repeat = block_config['repeat']
-            in_channels = config['input_channels'] if i==0 else config['block_configs'][i-1]['channels']
-            out_channels = block_config['channels']
-            kernel_size = block_config['kernel_size']
-            stride = block_config['stride']
-            dilation = block_config['dilation']
+            in_channels = config['input_channels'] if i==0 else config['channels'][i-1]
+            out_channels = config['channels'][i]
+            kernel_size = config['kernel_sizes'][i]
+            stride = config['strides'][i]
+            dilation = config['dilations'][i]
             bn_momentum = config['bn_momentum']
             bn_eps = config['bn_eps']
-            dropout = block_config['dropout']
-            residual = block_config['residual']
-            activation_fn = block_config['activation_fn']
+            dropout = config.get('dropout', config['dropouts'][i])
+            residual = bool(config['residual'][i])
+            activation_fn = config['activation_fn']
 
             block_list.append(Jasper_conv_block(repeat=repeat, in_channels=in_channels, out_channels=out_channels,
-                                                kernel_size=kernel_size, stride=stride, dilation=dilation,
-                                                dropout=dropout, residual=residual, bn_momentum=bn_momentum, 
-                                                bn_eps=bn_eps, activation_fn=activation_fn
-                                               )
-                             )
+                                         kernel_size=kernel_size, stride=stride, dilation=dilation,
+                                         dropout=dropout, residual=residual, 
+                                         bn_momentum=bn_momentum, bn_eps=bn_eps, activation_fn=activation_fn))
             
             skip_convs = []
             skip_bns = []
@@ -1004,12 +1001,13 @@ class JasperNet(nn.Module):
         self.block_list = nn.ModuleList(block_list)
         self.all_skip_convs = nn.ModuleList(all_skip_convs)
         self.all_skip_bns = nn.ModuleList(all_skip_bns)
-    
-    def forward(self, input_):
+    def forward(self, input_, return_skips=False):
         residuals = []
+        skips = []
+        x = input_
+        #TODO: if first layer is residual
         for i, block in enumerate(self.block_list):
             res = 0
-            
             if block.residual:
                 if self.dense_residual:
                     residuals.append(x)
@@ -1019,9 +1017,11 @@ class JasperNet(nn.Module):
                 for skip_conv, skip_bn, residual in zip(self.all_skip_convs[i], self.all_skip_bns[i], residuals):
                     res += skip_bn(skip_conv(residual))
                 x = block(x, res)
+                skips.append(x)
             else:
                 x = block(x, 0)
-                
+        if return_skips:
+            return x, skips
         return x
     
     
