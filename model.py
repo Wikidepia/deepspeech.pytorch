@@ -264,6 +264,7 @@ class DeepSpeech(nn.Module):
                 )
         elif self._rnn_type == 'cnn_jasper': #  http://arxiv.org/abs/1904.03288
             size = 1024
+            big_block_repeat = self._cnn_width // 5
             self.rnns = JasperNet(
                 DotDict(config = {
                                 'dense_residual':False,
@@ -271,13 +272,13 @@ class DeepSpeech(nn.Module):
                                 'bn_momentum':0.1,
                                 'bn_eps':1e-05,
                                 'activation_fn':nn.ReLU,
-                                'repeats':[1,5,5,5,5,5,5,5,5,5,5,1,1],
-                                'channels':[256,256,256,384,384,512,512,640,640,768,768,896,1024],
-                                'kernel_sizes':[11,11,11,13,13,17,17,21,21,25,25,29,1],
-                                'strides':[2,1,1,1,1,1,1,1,1,1,1,1,1],
-                                'dilations':[1,1,1,1,1,1,1,1,1,1,1,2,1],
-                                'dropouts':[0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.3,0.3,0.3,0.3,0.4,0.4],
-                                'residual':[0,1,1,1,1,1,1,1,1,1,1,0,0],
+                                'repeats':[1] + [self._hidden_layers] * self._cnn_width + [1,1],
+                                'channels':[256] + sorted(big_block_repeat * [256,384,512,640,768]) + [896,1024],
+                                'kernel_sizes':[11] + sorted(big_block_repeat * [11,13,17,21,25]) + [29,1],
+                                'strides':[2] + [1] * self._cnn_width + [1,1],
+                                'dilations':[1] + [1] * self._cnn_width + [2,1],
+                                'dropouts':[0.2] + sorted(big_block_repeat * [0.2,0.2,0.2,0.3,0.3]) + [0.4,0.4],
+                                'residual':[0] + [1] * self._cnn_width + [0,0],
                                 })                
             )
             self.fc = nn.Sequential(
