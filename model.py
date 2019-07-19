@@ -298,7 +298,7 @@ class DeepSpeech(nn.Module):
                 
             }
             print(jasper_config)
-            self.rnns = JasperNet(jasper_config)
+            self.rnns = JasperNetEasy(jasper_config)
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
