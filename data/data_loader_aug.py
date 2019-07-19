@@ -46,13 +46,14 @@ from data.audio_loader import load_audio_norm
 from scipy.io import wavfile
 
 tq = tqdm.tqdm
-MAX_DURATION_AUG = 10        
+MAX_DURATION_AUG = 10
 
 
 windows = {'hamming': scipy.signal.hamming,
            'hann': scipy.signal.hann,
            'blackman': scipy.signal.blackman,
            'bartlett': scipy.signal.bartlett}
+
 
 def load_audio(path, channel=-1):
     sound, sample_rate = torchaudio.load(path, normalization=False)
@@ -179,7 +180,7 @@ class SpectrogramParser(AudioParser):
             tempo_id = random.randrange(3)
         else:
             tempo_id = 0
-        
+
         if False: #if USE_CACHE:
             cache_fn, spect = self.load_audio_cache(audio_path, tempo_id)
         else:
@@ -195,11 +196,11 @@ class SpectrogramParser(AudioParser):
                                                                    channel=self.channel,
                                                                    tempo_range=TEMPOS[tempo_id][1],
                                                                    transforms=self.augs)
-                else: # never use this for now   
+                else: # never use this for now
                     y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
                                                                    channel=self.channel, tempo_range=TEMPOS[tempo_id][1])                    
-            
-            else: # never use this for now 
+
+            else: # never use this for now
                 # FIXME: We never call this
                 y, sample_rate = load_audio(audio_path, channel=self.channel)
             if self.noiseInjector:
@@ -238,11 +239,11 @@ class SpectrogramParser(AudioParser):
         # STFT
         D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
                          win_length=win_length, window=self.window)
-        
+
         # spect, phase = librosa.magphase(D)
         # 3x faster
         spect = np.abs(D)
-        
+
         shape = spect.shape
         if shape[0] < 161:
             spect.resize((161, *shape[1:]))
@@ -260,7 +261,7 @@ class SpectrogramParser(AudioParser):
                 # pretend as if audio is 8kHz
                 spect[81:] = 0 
         return spect[:161]
-    
+
     def audio_to_stft_numpy(self, y, sample_rate):
         n_fft = int(sample_rate * (self.window_size + 1e-8))
         win_length = n_fft
@@ -270,12 +271,12 @@ class SpectrogramParser(AudioParser):
         # D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
         #                 win_length=win_length, window=self.window)
         #spect, phase = librosa.magphase(D)
-        
+
         # numpy STFT
         spect = power_spec(y,
                            window_stride=(win_length,hop_length),
                            fft_size=n_fft)
-        
+
         shape = spect.shape
         if shape[0] < 161:
             spect.resize((161, *shape[1:]))
@@ -283,7 +284,7 @@ class SpectrogramParser(AudioParser):
         # print(spect.shape)
         # print(shape, spect.shape)
         return spect[:161]    
-    
+
     def normalize_audio(self, spect):
         # S = log(S+1)
         if self.normalize == 'mean':
@@ -364,16 +365,16 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.ids = ids
         self.size = len(self.ids)
         self.labels = Labels(labels)
-        
+
         self.aug_type = 0
-        
+
         self.aug_prob_8khz = audio_conf.get('aug_prob_8khz')
         self.aug_prob = audio_conf.get('noise_prob')
         self.aug_prob_spect = audio_conf.get('aug_prob_spect')
         self.phoneme_count = audio_conf.get('phoneme_count',0) # backward compatible
         if self.phoneme_count>0:
             self.phoneme_label_parser = PhonemeLabels(audio_conf.get('phoneme_map',None)) 
-    
+
         if self.aug_prob>0:
             print('Using sound augs!')            
             self.aug_samples = glob(audio_conf.get('noise_dir'))
@@ -432,7 +433,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             )
         else:
             self.augs = None
-    
+
         if self.aug_prob_spect>0:
             print('Using spectrogram augs!')
             aug_list = [
@@ -442,14 +443,14 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 TimeMask(bands=2,
                          prob=self.aug_prob_spect,
                          dropout_length=50,
-                         max_dropout_ratio=.15)               
-            ]            
+                         max_dropout_ratio=.15)
+            ]
             self.augs_spect = SOneOf(
                     aug_list, prob=self.aug_prob
             )
         else:
             self.augs_spect = None
-            
+
         if curriculum_filepath:
             with open(curriculum_filepath, newline='') as f:
                 reader = csv.DictReader(f)
@@ -473,12 +474,12 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         audio_path, transcript_path, dur = sample[0], sample[1], sample[2]
         spect = self.parse_audio(audio_path)
         reference = self.parse_transcript(transcript_path)
-        
+
         if self.phoneme_count>0:
             phoneme_path = self.get_phoneme_path(transcript_path)
             phoneme_reference = self.parse_phoneme(phoneme_path)
             return spect, reference, audio_path, phoneme_reference
-        
+
         return spect, reference, audio_path
 
     def get_curriculum_info(self, item):

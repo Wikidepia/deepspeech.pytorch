@@ -117,7 +117,7 @@ if __name__ == '__main__':
         model_outputs = model(inputs, input_sizes)
         # ignore phoneme outputs
         if len(model_outputs) == 5:
-            out0, out, output_sizes, _, _ = model_output
+            out0, out, output_sizes, _, _ = model_outputs
         else:
             out0, out, output_sizes = model_outputs
         del inputs, targets, input_percentages, target_sizes, model_outputs

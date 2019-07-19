@@ -36,21 +36,21 @@ def _apply_lst(args):
 def process_text_file(tup):
     (path, target_path) = tup
     global your_transcriptor
-
-    with open(path, 'r', encoding="utf-8") as file:
-        text = file.read().replace('\n', '')
-        text = replace_encoded(text)
-
     try:
         if os.path.isfile(target_path):
-            os.remove(target_path)
-            print('{} was present, so removed'.format(target_path))
+            pass
+            # os.remove(target_path)
+            # print('{} was present, so removed'.format(target_path))
+            # print('{} was present, so ignored'.format(target_path))
+        else:
+            with open(path, 'r', encoding="utf-8") as file:
+                text = file.read().replace('\n', '')
+                text = replace_encoded(text)
+            transcription = ' '.join(['-'.join(_[0]) for _
+                                    in your_transcriptor.transcribe(text.split(' '))])
 
-        transcription = ' '.join(['-'.join(_[0]) for _
-                                  in your_transcriptor.transcribe(text.split(' '))])
-
-        with open(target_path, "w") as transcription_file:
-            print(transcription, file=transcription_file)
+            with open(target_path, "w") as transcription_file:
+                print(transcription, file=transcription_file)
         return text, transcription
     except:
         return ''
@@ -80,7 +80,7 @@ def replace_encoded(text):
         text = ''.join(_text)
     return text
 
-manifests = ['../data/manifests/train_v05_cleaned_phone_calls.csv']
+manifests = ['../data/manifests/train_v05_very_clean_all.csv']
 
 df = pd.concat([read_manifest(_) for _ in manifests])
 

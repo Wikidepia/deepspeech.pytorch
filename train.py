@@ -900,17 +900,35 @@ if __name__ == '__main__':
         # start with non-phoneme model, continue with phonemes
         labels = DeepSpeech.get_labels(model)
         audio_conf = DeepSpeech.get_audio_conf(model)
+
+        # in case you need to resume and change audio conf
+        """
+        audio_conf = dict(sample_rate=args.sample_rate,
+                          window_size=args.window_size,
+                          window_stride=args.window_stride,
+                          window=args.window,
+                          noise_dir=args.noise_dir,
+                          noise_prob=args.noise_prob,
+                          noise_levels=(args.noise_min, args.noise_max),
+                          aug_prob_8khz=args.aug_prob_8khz,
+                          aug_prob_spect=args.aug_prob_spect)
+
+        if args.use_phonemes:
+            audio_conf['phoneme_count'] = len(phoneme_map)
+            audio_conf['phoneme_map'] = phoneme_map                          
+        """
+
         if args.use_phonemes and package.get('phoneme_count',0)==0:
             model = DeepSpeech.add_phonemes_to_model(model,
                                                      len(phoneme_map))
             audio_conf['phoneme_count'] = len(phoneme_map)
             audio_conf['phoneme_map'] = phoneme_map
             model.phoneme_count = len(phoneme_map)
-            
+
         # REMOVE LATER
         # audio_conf['noise_dir'] = '../data/augs/*.wav'
         # audio_conf['noise_prob'] = 0.1
-        
+
         parameters = model.parameters()
         optimizer = build_optimizer(args, parameters)
         if not args.finetune:  # Don't want to restart training
@@ -958,7 +976,7 @@ if __name__ == '__main__':
                           noise_levels=(args.noise_min, args.noise_max),
                           aug_prob_8khz=args.aug_prob_8khz,
                           aug_prob_spect=args.aug_prob_spect)
-        
+
         if args.use_phonemes:
             audio_conf['phoneme_count'] = len(phoneme_map)
             audio_conf['phoneme_map'] = phoneme_map
@@ -974,7 +992,7 @@ if __name__ == '__main__':
                            bidirectional=args.bidirectional,
                            bnm=args.batch_norm_momentum,
                            dropout=args.dropout,
-                           phoneme_count=len(phoneme_map) if args.use_phonemes else 0                      
+                           phoneme_count=len(phoneme_map) if args.use_phonemes else 0
                           )
         parameters = model.parameters()
         optimizer = build_optimizer(args, parameters)
@@ -995,15 +1013,15 @@ if __name__ == '__main__':
                        'aug_prob_spect':0,
                        'phoneme_count':0,
                        'phoneme_map':None}
-   
-    print('Test audio conf')    
+
+    print('Test audio conf')
     print(test_audio_conf)
     # no augs on test
     test_dataset = SpectrogramDataset(audio_conf=test_audio_conf,
                                       cache_path=args.cache_dir,
                                       manifest_filepath=args.val_manifest,
                                       labels=labels, normalize=args.norm, augment=False)
-    
+
     # if file is specified
     # separate train validation wo domain shift 
     # also wo augs
@@ -1012,7 +1030,7 @@ if __name__ == '__main__':
                                               cache_path=args.cache_dir,
                                               manifest_filepath=args.train_val_manifest,
                                               labels=labels, normalize=args.norm, augment=False)    
-    
+
     if args.reverse_sort:
         # XXX: A hack to test max memory load.
         train_dataset.ids.reverse()
@@ -1020,12 +1038,12 @@ if __name__ == '__main__':
     test_loader = AudioDataLoader(test_dataset,
                                   batch_size=args.val_batch_size,
                                   num_workers=args.num_workers)
-    
+
     if args.train_val_manifest != '':
         trainval_loader = AudioDataLoader(trainval_dataset,
                                           batch_size=args.val_batch_size,
                                           num_workers=args.num_workers)        
-        
+
 
     model = model.to(device)
     if args.distributed:
