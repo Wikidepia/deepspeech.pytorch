@@ -285,7 +285,6 @@ class DeepSpeech(nn.Module):
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
-        
         elif self._rnn_type == 'cnn_jasper_2': #  http://arxiv.org/abs/1904.03288
             size = 1024
             jasper_config = {
@@ -920,7 +919,8 @@ class JasperNet(nn.Module):
         if return_skips:
             return x, skips
         return x
-    
+
+   
 class Jasper_non_repeat(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
                  dilation=1, dropout=0, bn_momentum=0.1, bn_eps=1e-05, activation_fn=None):
@@ -942,7 +942,8 @@ class Jasper_non_repeat(nn.Module):
         x = self.activation_fn(x)
         x = self.dropout(x)
         return x
-    
+
+
 class Jasper_repeat(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, 
                  repeat_5=False, stride=1, dilation=1, dropout=0, bn_momentum=0.1, bn_eps=1e-05, activation_fn=None):
@@ -951,21 +952,21 @@ class Jasper_repeat(nn.Module):
         self.out_channels = out_channels
         self.repeat_5 = repeat_5
         
-        #main repeats inside block
-        self.repeat_0 = JasperConv1dSame(self.in_channels, self.out_channels, kernel_size, stride, dilation)
-        self.repeat_1 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
-        self.repeat_2 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
+        # main repeats inside block
+        repeat_0 = JasperConv1dSame(self.in_channels, self.out_channels, kernel_size, stride, dilation)
+        repeat_1 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
+        repeat_2 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
         if repeat_5:
-            self.repeat_3 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
-            self.repeat_4 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
-            
-        #bns
-        self.bn_0 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
-        self.bn_1 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
-        self.bn_2 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
-        if self.repeat_5:
-            self.bn_3 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
-            self.bn_4 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
+            repeat_3 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
+            repeat_4 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
+
+        # bns
+        bn_0 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
+        bn_1 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
+        bn_2 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
+        if repeat_5:
+            bn_3 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
+            bn_4 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
         
         self.residual = nn.Conv1d(in_channels, out_channels, 1, bias=False)
         self.res_bn = nn.BatchNorm1d(out_channels, bn_eps, bn_momentum)
@@ -973,12 +974,12 @@ class Jasper_repeat(nn.Module):
         self.activation_fn = activation_fn()
         self.dropout = nn.Dropout(p=dropout)
         
-        self.rep_0 = nn.Sequential(self.repeat_0, self.bn_0, self.activation_fn, self.dropout)
-        self.rep_1 = nn.Sequential(self.repeat_1, self.bn_1, self.activation_fn, self.dropout)
-        self.rep_2 = nn.Sequential(self.repeat_2, self.bn_2, self.activation_fn, self.dropout)
+        self.rep_0 = nn.Sequential(repeat_0, bn_0, self.activation_fn, self.dropout)
+        self.rep_1 = nn.Sequential(repeat_1, bn_1, self.activation_fn, self.dropout)
+        self.rep_2 = nn.Sequential(repeat_2, bn_2, self.activation_fn, self.dropout)
         if self.repeat_5:
-            self.rep_3 = nn.Sequential(self.repeat_3, self.bn_3, self.activation_fn, self.dropout)
-            self.rep_4 = nn.Sequential(self.repeat_4, self.bn_4, self.activation_fn, self.dropout)
+            self.rep_3 = nn.Sequential(repeat_3, bn_3, self.activation_fn, self.dropout)
+            self.rep_4 = nn.Sequential(repeat_4, bn_4, self.activation_fn, self.dropout)
         
     def forward(self, input_, return_skips=False):
         x = self.rep_0(input_)
@@ -994,7 +995,8 @@ class Jasper_repeat(nn.Module):
         if return_skips: 
             return x, res
         return x, None
-    
+
+
 class JasperNetEasy(nn.Module):
     def __init__(self, config=None):
         super(JasperNetEasy,self).__init__()
@@ -1054,24 +1056,17 @@ class JasperNetEasy(nn.Module):
                                        dropout=0.4, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
         
     def forward(self, x, return_skips=False):
-        
-        skips = []
+        if return_skips:
+            skips = []
         x = self.init(x)
-        x, _ = self.block_0(x, return_skips)
-        skips.append(_)
-        x, _ = self.block_1(x, return_skips)
-        skips.append(_)
-        x, _ = self.block_2(x, return_skips)
-        skips.append(_)
-        x, _ = self.block_3(x, return_skips)
-        skips.append(_)
-        x, _ = self.block_4(x, return_skips)
-        skips.append(_)
+        x, skip1 = self.block_0(x, return_skips)
+        assert skip1 == None
+        x, skip2 = self.block_1(x, return_skips)
+        x, skip3 = self.block_2(x, return_skips)
+        x, skip4 = self.block_3(x, return_skips)
+        x, skip5 = self.block_4(x, return_skips)
         x = self.out_0(x)
         x = self.out_1(x)
-        
-        if return_skips:
-            return x, skips
         return x
     
     
