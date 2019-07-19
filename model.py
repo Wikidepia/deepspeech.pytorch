@@ -20,7 +20,8 @@ supported_rnns = {
     'glu_flexible':None,
     'large_cnn':None,
     'cnn_residual':None,
-    'cnn_jasper':None
+    'cnn_jasper':None,
+    'cnn_jasper_2':None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -283,7 +284,24 @@ class DeepSpeech(nn.Module):
             self.rnns = JasperNet(jasper_config)
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
-            )                 
+            )
+        
+        elif self._rnn_type == 'cnn_jasper_2': #  http://arxiv.org/abs/1904.03288
+            size = 1024
+            jasper_config = {
+                'input_channels':161,
+                'bn_momentum':0.1,
+                'bn_eps':1e-05,
+                'activation_fn':nn.ReLU,
+                'repeats':self._hidden_layers,
+                'num_modules':self._cnn_width
+                
+            }
+            print(jasper_config)
+            self.rnns = JasperNet(jasper_config)
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
         elif self._rnn_type == 'large_cnn':
             self.rnns = LargeCNN(
                 DotDict({
@@ -360,7 +378,7 @@ class DeepSpeech(nn.Module):
         output_lengths = self.get_seq_lens(lengths).cuda()
 
         if self._rnn_type in ['cnn', 'glu_small', 'glu_large', 'large_cnn',
-                              'cnn_residual', 'cnn_jasper']:
+                              'cnn_residual', 'cnn_jasper', 'cnn_jasper_2']:
             x = x.squeeze(1)
             x = self.rnns(x)
             if hasattr(self, '_phoneme_count'):
@@ -899,6 +917,159 @@ class JasperNet(nn.Module):
                     skips.append(x)
             else:
                 x = block(x, 0)
+        if return_skips:
+            return x, skips
+        return x
+    
+class Jasper_non_repeat(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
+                 dilation=1, dropout=0, bn_momentum=0.1, bn_eps=1e-05, activation_fn=None):
+        super(Jasper_non_repeat, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.bn = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
+        if stride==1:
+            self.conv = JasperConv1dSame(self.in_channels, self.out_channels, kernel_size, stride, dilation)
+        else:
+            self.conv = nn.Conv1d(self.in_channels, self.out_channels,kernel_size,
+                                         stride=stride, dilation=dilation, padding=kernel_size//2)
+        self.activation_fn = activation_fn()
+        self.dropout = nn.Dropout(p=dropout)
+    
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
+        x = self.activation_fn(x)
+        x = self.dropout(x)
+        return x
+    
+class Jasper_repeat(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, 
+                 repeat_5=False, stride=1, dilation=1, dropout=0, bn_momentum=0.1, bn_eps=1e-05, activation_fn=None):
+        super(Jasper_repeat, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.repeat_5 = repeat_5
+        
+        #main repeats inside block
+        self.repeat_0 = JasperConv1dSame(self.in_channels, self.out_channels, kernel_size, stride, dilation)
+        self.repeat_1 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
+        self.repeat_2 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
+        if repeat_5:
+            self.repeat_3 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
+            self.repeat_4 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
+            
+        #bns
+        self.bn_0 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
+        self.bn_1 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
+        self.bn_2 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
+        if self.repeat_5:
+            self.bn_3 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
+            self.bn_4 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
+        
+        self.residual = nn.Conv1d(in_channels, out_channels, 1, bias=False)
+        self.res_bn = nn.BatchNorm1d(out_channels, bn_eps, bn_momentum)
+        
+        self.activation_fn = activation_fn()
+        self.dropout = nn.Dropout(p=dropout)
+        
+        self.rep_0 = nn.Sequential(self.repeat_0, self.bn_0, self.activation_fn, self.dropout)
+        self.rep_1 = nn.Sequential(self.repeat_1, self.bn_1, self.activation_fn, self.dropout)
+        self.rep_2 = nn.Sequential(self.repeat_2, self.bn_2, self.activation_fn, self.dropout)
+        if self.repeat_5:
+            self.rep_3 = nn.Sequential(self.repeat_3, self.bn_3, self.activation_fn, self.dropout)
+            self.rep_4 = nn.Sequential(self.repeat_4, self.bn_4, self.activation_fn, self.dropout)
+        
+    def forward(self, input_, return_skips=False):
+        x = self.rep_0(input_)
+        x = self.rep_1(x)
+        x = self.rep_2(x)
+        if self.repeat_5:
+            x = self.rep_3(x)
+            x = self.rep_4(x)
+        res = self.res_bn(self.residual(input_))
+        x = x + res
+        x = self.activation_fn(x)
+        x = self.dropout(x)
+        if return_skips: 
+            return x, res
+        return x, None
+    
+class JasperNetEasy(nn.Module):
+    def __init__(self, config=None):
+        super(JasperNetEasy,self).__init__()
+        self.in_channels = config['input_channels']
+        self.bn_momentum = config['bn_momentum']
+        self.bn_eps = config['bn_eps']
+        self.activation_fn = config['activation_fn']
+        self.repeats = config['repeats']
+        self.num_modules = config['num_modules']
+        
+        assert self.num_modules in [5,10]
+        
+        assert self.repeats in [3,5]
+        self.repeat_5 = False
+        if self.repeats == 5:
+            self.repeat_5 = True
+        
+        self.init = Jasper_non_repeat(self.in_channels, out_channels=256, kernel_size=11, stride=2, dilation=1, 
+                                      dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
+        
+        self.block_0 = Jasper_repeat(in_channels=256, out_channels=256, kernel_size=11, repeat_5=self.repeat_5, stride=1, dilation=1, 
+                                     dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
+        self.block_1 = Jasper_repeat(in_channels=256, out_channels=384, kernel_size=13, repeat_5=self.repeat_5, stride=1, dilation=1, 
+                                     dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
+        self.block_2 = Jasper_repeat(in_channels=384, out_channels=512, kernel_size=17, repeat_5=self.repeat_5, stride=1, dilation=1, 
+                                     dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
+        self.block_3 = Jasper_repeat(in_channels=512, out_channels=640, kernel_size=21, repeat_5=self.repeat_5, stride=1, dilation=1, 
+                                     dropout=0.3, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
+        self.block_4 = Jasper_repeat(in_channels=640, out_channels=768, kernel_size=25, repeat_5=self.repeat_5, stride=1, dilation=1, 
+                                     dropout=0.3, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
+        
+        if self.num_modules == 10:
+            self.block_0_0= Jasper_repeat(in_channels=256, out_channels=256, kernel_size=11, repeat_5=self.repeat_5, stride=1,
+                                          dilation=1, dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, 
+                                          activation_fn=self.activation_fn)
+            self.block_1_0 = Jasper_repeat(in_channels=384, out_channels=384, kernel_size=13, repeat_5=self.repeat_5, stride=1, 
+                                           dilation=1, dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, 
+                                           activation_fn=self.activation_fn)
+            self.block_2_0 = Jasper_repeat(in_channels=512, out_channels=512, kernel_size=17, repeat_5=self.repeat_5, stride=1,
+                                           dilation=1, dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, 
+                                           activation_fn=self.activation_fn)
+            self.block_3_0 = Jasper_repeat(in_channels=640, out_channels=640, kernel_size=21, repeat_5=self.repeat_5, stride=1, 
+                                           dilation=1, dropout=0.3, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, 
+                                           activation_fn=self.activation_fn)
+            self.block_4_0 = Jasper_repeat(in_channels=768, out_channels=768, kernel_size=25, repeat_5=self.repeat_5, stride=1, dilation=1, 
+                                           dropout=0.3, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
+            
+            self.block_0 = nn.Sequential(self.block_0, self.block_0_0)
+            self.block_1 = nn.Sequential(self.block_1, self.block_1_0)
+            self.block_2 = nn.Sequential(self.block_2, self.block_2_0)
+            self.block_3 = nn.Sequential(self.block_3, self.block_3_0)
+            self.block_4 = nn.Sequential(self.block_4, self.block_4_0)
+        
+        self.out_0 = Jasper_non_repeat(768, out_channels=896, kernel_size=29, stride=1, dilation=2, 
+                                       dropout=0.4, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
+        self.out_1 = Jasper_non_repeat(896, out_channels=1024, kernel_size=1, stride=1, dilation=1, 
+                                       dropout=0.4, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
+        
+    def forward(self, x, return_skips=False):
+        
+        skips = []
+        x = self.init(x)
+        x, _ = self.block_0(x, return_skips)
+        skips.append(_)
+        x, _ = self.block_1(x, return_skips)
+        skips.append(_)
+        x, _ = self.block_2(x, return_skips)
+        skips.append(_)
+        x, _ = self.block_3(x, return_skips)
+        skips.append(_)
+        x, _ = self.block_4(x, return_skips)
+        skips.append(_)
+        x = self.out_0(x)
+        x = self.out_1(x)
+        
         if return_skips:
             return x, skips
         return x
