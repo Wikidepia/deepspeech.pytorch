@@ -265,22 +265,22 @@ class DeepSpeech(nn.Module):
         elif self._rnn_type == 'cnn_jasper': #  http://arxiv.org/abs/1904.03288
             size = 1024
             big_block_repeat = self._cnn_width // 5
-            self.rnns = JasperNet(
-                DotDict(config = {
-                                'dense_residual':False,
-                                'input_channels':161,
-                                'bn_momentum':0.1,
-                                'bn_eps':1e-05,
-                                'activation_fn':nn.ReLU,
-                                'repeats':[1] + [self._hidden_layers] * self._cnn_width + [1,1],
-                                'channels':[256] + sorted(big_block_repeat * [256,384,512,640,768]) + [896,1024],
-                                'kernel_sizes':[11] + sorted(big_block_repeat * [11,13,17,21,25]) + [29,1],
-                                'strides':[2] + [1] * self._cnn_width + [1,1],
-                                'dilations':[1] + [1] * self._cnn_width + [2,1],
-                                'dropouts':[0.2] + sorted(big_block_repeat * [0.2,0.2,0.2,0.3,0.3]) + [0.4,0.4],
-                                'residual':[0] + [1] * self._cnn_width + [0,0],
-                                })                
-            )
+            jasper_config = {
+                'dense_residual':False,
+                'input_channels':161,
+                'bn_momentum':0.1,
+                'bn_eps':1e-05,
+                'activation_fn':nn.ReLU,
+                'repeats':[1] + [self._hidden_layers] * self._cnn_width + [1,1],
+                'channels':[256] + sorted(big_block_repeat * [256,384,512,640,768]) + [896,1024],
+                'kernel_sizes':[11] + sorted(big_block_repeat * [11,13,17,21,25]) + [29,1],
+                'strides':[2] + [1] * self._cnn_width + [1,1],
+                'dilations':[1] + [1] * self._cnn_width + [2,1],
+                'dropouts':[0.2] + sorted(big_block_repeat * [0.2,0.2,0.2,0.3,0.3]) + [0.4,0.4],
+                'residual':[0] + [1] * self._cnn_width + [0,0],
+            }
+            print(jasper_config)
+            self.rnns = JasperNet(jasper_config)
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )                 
@@ -779,7 +779,7 @@ class Jasper_conv_block(nn.Module):
                  bn_momentum=0.1, 
                  bn_eps=1e-05, 
                  activation_fn=None):
-        super(conv_block, self).__init__()
+        super(Jasper_conv_block, self).__init__()
         
         self.bn =nn.ModuleList([nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum) for i in range(repeat)])
         
@@ -788,7 +788,11 @@ class Jasper_conv_block(nn.Module):
         self.residual = residual
         
         module_list = []
-        module_list.append(JasperConv1dSame(self.in_channels, self.out_channels, kernel_size, stride, dilation))
+        if stride==1:
+            module_list.append(JasperConv1dSame(self.in_channels, self.out_channels, kernel_size, stride, dilation))
+        else:
+            module_list.append(nn.Conv1d(self.in_channels, self.out_channels,kernel_size,
+                                         stride=stride, dilation=dilation, padding=kernel_size//2))
         for rep in range(repeat-1):
             module_list.append(JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation))
 
@@ -797,7 +801,7 @@ class Jasper_conv_block(nn.Module):
         self.activation_fn = activation_fn()
         self.dropout = nn.Dropout(p=dropout)
             
-    def forward(self, x, res_input=0):
+    def forward(self, x, res_input=None):
         for i, module in enumerate(self.module_list):
             x = module(x)
             x = self.bn[i](x)
@@ -806,10 +810,8 @@ class Jasper_conv_block(nn.Module):
             x = self.activation_fn(x)
             x = self.dropout(x)
             return x
-    
-    
-    
-    
+
+
 class JasperConv1dSame(nn.Conv1d):
     def __init__(self, 
                  in_channels, 
@@ -824,17 +826,14 @@ class JasperConv1dSame(nn.Conv1d):
     def forward(self, x):
         out_len = x.shape[2]
         padding = math.ceil(((out_len - 1) * self.stride[0] + self.kernel_size[0] + \
-                             (self.kernel_size[0] - 1) * (self.dilation[0] -1) - out_len))
-
+                             (self.kernel_size[0] - 1) * (self.dilation[0] - 1) - out_len))
         if padding > 0:
             x = F.pad(x, (padding//2, padding-padding//2))
         return F.conv1d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
     
     
-    
-    
 class JasperNet(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config=None):
         super(JasperNet, self).__init__()
         
         self.dense_residual = config['dense_residual']
@@ -880,9 +879,9 @@ class JasperNet(nn.Module):
         self.all_skip_bns = nn.ModuleList(all_skip_bns)
     def forward(self, input_, return_skips=False):
         residuals = []
-        skips = []
+        if return_skips:
+            skips = []
         x = input_
-        #TODO: if first layer is residual
         for i, block in enumerate(self.block_list):
             res = 0
             if block.residual:
@@ -890,11 +889,14 @@ class JasperNet(nn.Module):
                     residuals.append(x)
                 else:
                     residuals = [x]
-                assert len(self.all_skip_convs[i]) == len(residuals)
-                for skip_conv, skip_bn, residual in zip(self.all_skip_convs[i], self.all_skip_bns[i], residuals):
+                # assert len(self.all_skip_convs[i]) == len(residuals)
+                for skip_conv, skip_bn, residual in zip(self.all_skip_convs[i],
+                                                        self.all_skip_bns[i],
+                                                        residuals):
                     res += skip_bn(skip_conv(residual))
                 x = block(x, res)
-                skips.append(x)
+                if return_skips:
+                    skips.append(x)
             else:
                 x = block(x, 0)
         if return_skips:
