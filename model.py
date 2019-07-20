@@ -971,11 +971,11 @@ class Jasper_conv_block(nn.Module):
         for i, module in enumerate(self.module_list):
             x = module(x)
             x = self.bn[i](x)
-            if i == (len(self.module_list)-1):
+            if (i == (len(self.module_list)-1)) & (res_input is not None):
                 x = x + res_input
             x = self.activation_fn(x)
             x = self.dropout(x)
-            return x
+        return x
 
 
 class JasperConv1dSame(nn.Conv1d):
@@ -1064,7 +1064,7 @@ class JasperNet(nn.Module):
                 if return_skips:
                     skips.append(x)
             else:
-                x = block(x, 0)
+                x = block(x)
         if return_skips:
             return x, skips
         return x
