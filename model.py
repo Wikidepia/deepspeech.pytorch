@@ -21,7 +21,8 @@ supported_rnns = {
     'large_cnn':None,
     'cnn_residual':None,
     'cnn_jasper':None,
-    'cnn_jasper_2':None
+    'cnn_jasper_2':None,
+    'cnn_residual_repeat':None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -220,7 +221,7 @@ class DeepSpeech(nn.Module):
             nn.Hardtanh(0, 20, inplace=True),
         ))
 
-        if self._rnn_type == 'cnn': #  wav2letter with some features
+        if self._rnn_type == 'cnn':  #  wav2letter with some features
             size = rnn_hidden_size
             modules = Wav2Letter(
                 DotDict({
@@ -238,7 +239,7 @@ class DeepSpeech(nn.Module):
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
-        elif self._rnn_type == 'cnn_residual': #  wav2letter with some features
+        elif self._rnn_type == 'cnn_residual':  #  wav2letter with some features
             size = rnn_hidden_size
             self.rnns = ResidualWav2Letter(
                 DotDict({
@@ -263,7 +264,32 @@ class DeepSpeech(nn.Module):
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
                 )
-        elif self._rnn_type == 'cnn_jasper': #  http://arxiv.org/abs/1904.03288
+        elif self._rnn_type == 'cnn_residual_repeat':  # repeat middle convs  
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.25,
+                    'skip': True
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+            # make checkpoints reverse compatible
+            if hasattr(self, '_phoneme_count'):
+                self.fc_phoneme = nn.Sequential(
+                    nn.Conv1d(in_channels=size,
+                              out_channels=self._phoneme_count, kernel_size=1)
+                )               
+        elif self._rnn_type == 'cnn_jasper':  #  http://arxiv.org/abs/1904.03288
             size = 1024
             big_block_repeat = self._cnn_width // 5
             jasper_config = {
@@ -285,7 +311,7 @@ class DeepSpeech(nn.Module):
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
-        elif self._rnn_type == 'cnn_jasper_2': #  http://arxiv.org/abs/1904.03288
+        elif self._rnn_type == 'cnn_jasper_2':  #  http://arxiv.org/abs/1904.03288
             size = 1024
             jasper_config = {
                 'input_channels':161,
@@ -377,7 +403,8 @@ class DeepSpeech(nn.Module):
         output_lengths = self.get_seq_lens(lengths).cuda()
 
         if self._rnn_type in ['cnn', 'glu_small', 'glu_large', 'large_cnn',
-                              'cnn_residual', 'cnn_jasper', 'cnn_jasper_2']:
+                              'cnn_residual', 'cnn_jasper', 'cnn_jasper_2',
+                               'cnn_residual_repeat']:
             x = x.squeeze(1)
             x = self.rnns(x)
             if hasattr(self, '_phoneme_count'):
@@ -646,9 +673,9 @@ class ResidualWav2Letter(nn.Module):
         for _ in range(0,repeat_layers):
             modules.extend(
                 [ResCNNBlock(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
-                               padding=padding, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
-                               nonlinearity=nn.ReLU(inplace=True),
-                               se_ratio=se_ratio,skip=skip)]
+                             padding=padding, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                             nonlinearity=nn.ReLU(inplace=True),
+                             se_ratio=se_ratio,skip=skip)]
             )
         # "epilog"
         modules.extend([ResCNNBlock(_in=cnn_width, out=size, kernel_size=31,
@@ -663,7 +690,53 @@ class ResidualWav2Letter(nn.Module):
         self.layers = nn.Sequential(*modules)
 
     def forward(self, x):
-        return self.layers(x)  
+        return self.layers(x)
+
+
+class ResidualRepeatWav2Letter(nn.Module):
+    def __init__(self,config):
+        super(ResidualRepeatWav2Letter, self).__init__()
+        
+        size = config.size
+        cnn_width = config.cnn_width
+        bnorm = config.bnorm
+        bnm = config.bnm
+        dropout = config.dropout
+        repeat_layers = config.repeat_layers
+        kernel_size = config.kernel_size # wav2letter default - 7
+        padding = kernel_size // 2
+        se_ratio = config.se_ratio
+        skip = config.skip
+        repeat = 2
+        
+        # "prolog"
+        modules = [ResCNNRepeatBlock(_in=161, out=cnn_width, kernel_size=kernel_size,
+                                     padding=padding, stride=2,bnm=bnm, bias=not bnorm, dropout=dropout,
+                                     nonlinearity=nn.ReLU(inplace=True),
+                                     se_ratio=0, skip=False, repeat=1)] # no skips and attention
+        
+        # main convs
+        for _ in range(0,repeat_layers):
+            modules.extend(
+                [ResCNNRepeatBlock(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
+                                   padding=padding, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                                   nonlinearity=nn.ReLU(inplace=True),
+                                   se_ratio=se_ratio, skip=skip, repeat=repeat)]
+            )
+        # "epilog"
+        modules.extend([ResCNNRepeatBlock(_in=cnn_width, out=size, kernel_size=31,
+                                          padding=15, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                                          nonlinearity=nn.ReLU(inplace=True),
+                                          se_ratio=0, skip=False, repeat=1)]) # no skips and attention
+        modules.extend([ResCNNRepeatBlock(_in=size, out=size, kernel_size=1,
+                                          padding=0, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                                          nonlinearity=nn.ReLU(inplace=True),
+                                          se_ratio=0, skip=False, repeat=1)]) # no skips and attention
+        
+        self.layers = nn.Sequential(*modules)
+
+    def forward(self, x):
+        return self.layers(x)         
 
 
 class GLUBlock(nn.Module):
@@ -779,7 +852,83 @@ class ResCNNBlock(nn.Module):
             x = torch.sigmoid(x_squeezed) * x                
         if self.skip:
             x = x + inputs
-        return x       
+        return x
+
+
+class ResCNNRepeatBlock(nn.Module):
+    def __init__(self,
+                 _in=1,
+                 out=400,
+                 kernel_size=13,
+                 stride=1,
+                 padding=0,
+                 dropout=0.1,
+                 bnm=0.1,
+                 nonlinearity=nn.ReLU(inplace=True),
+                 bias=True,
+                 se_ratio=0,
+                 skip=False,
+                 repeat=1):
+        super(ResCNNRepeatBlock, self).__init__()       
+        
+        self.skip = skip
+        has_se = (se_ratio is not None) and (0 < se_ratio <= 1)
+        dropout = nn.Dropout(dropout)
+        if has_se:
+            # squeeze after each block    
+            scse = SCSE(out,
+                        kernel_size=1, se_ratio=se_ratio)
+
+        modules = []
+        # just stick all the modules together
+        for i in range(0,repeat):
+            if i==0:
+                modules.extend([nn.Conv1d(_in, out, kernel_size,
+                                          stride=stride,
+                                          padding=padding,
+                                          bias=bias),
+                                nn.BatchNorm1d(out,
+                                               momentum=bnm),
+                                nonlinearity,
+                                dropout])
+            else:
+                modules.extend([nn.Conv1d(out, out, kernel_size,
+                                          stride=stride,
+                                          padding=padding,
+                                          bias=bias),
+                                nn.BatchNorm1d(out,
+                                               momentum=bnm),
+                                nonlinearity,
+                                dropout])
+            if has_se:
+                modules.extend([scse])                
+        
+        self.layers = nn.Sequential(*modules)
+        
+    def forward(self, x):
+        if self.skip:  # be a bit more memory efficient during ablations
+            inputs = x
+        x = self.layers(x)
+        if self.skip:
+            x = x + inputs
+        return x
+
+
+ # SCSE attention block https://arxiv.org/abs/1803.02579
+class SCSE(nn.Module):
+    def __init__(self,
+                 in_channels,
+                 kernel_size=1, se_ratio=0.1):
+        super(SCSE, self).__init__()
+        num_squeezed_channels = max(1, int(in_channels * se_ratio))
+        self._se_reduce = Conv1dSamePadding(in_channels=in_channels, out_channels=num_squeezed_channels, kernel_size=1)
+        self._se_expand = Conv1dSamePadding(in_channels=num_squeezed_channels, out_channels=in_channels, kernel_size=1)        
+
+    def forward(self, x):
+        x_squeezed = F.adaptive_avg_pool1d(x, 1) # channel dimension
+        x_squeezed = self._se_expand(relu_fn(self._se_reduce(x_squeezed)))
+        x = torch.sigmoid(x_squeezed) * x                
+        return x           
 
 
 # http://arxiv.org/abs/1904.03288
