@@ -276,7 +276,7 @@ class DeepSpeech(nn.Module):
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
                     'kernel_size': 7,
-                    'se_ratio': 0.25,
+                    'se_ratio': 0.2,
                     'skip': True
                 })
             )
@@ -707,22 +707,37 @@ class ResidualRepeatWav2Letter(nn.Module):
         padding = kernel_size // 2
         se_ratio = config.se_ratio
         skip = config.skip
-        repeat = 2
         
         # "prolog"
         modules = [ResCNNRepeatBlock(_in=161, out=cnn_width, kernel_size=kernel_size,
                                      padding=padding, stride=2,bnm=bnm, bias=not bnorm, dropout=dropout,
                                      nonlinearity=nn.ReLU(inplace=True),
                                      se_ratio=0, skip=False, repeat=1)] # no skips and attention
-        
         # main convs
-        for _ in range(0,repeat_layers):
-            modules.extend(
-                [ResCNNRepeatBlock(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
-                                   padding=padding, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
-                                   nonlinearity=nn.ReLU(inplace=True),
-                                   se_ratio=se_ratio, skip=skip, repeat=repeat)]
-            )
+        # 3 blocks
+        dilated_blocks = [0]
+        dilation_level = 2
+        dilated_subblocks = [1,2]
+
+        repeat_start = 2
+        repeat_mid = 2
+        repeat_end = 1
+
+        repeats = [repeat_start,
+                   repeat_mid,
+                   repeat_end]        
+
+        for j in range(0,3):
+            for _ in range(0,repeat_layers//3):
+                # 1221 dilation blocks
+                dilation = 1 + (j in dilated_blocks) * (_ in dilated_subblocks) * (dilation_level - 1)
+                modules.extend(
+                    [ResCNNRepeatBlock(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
+                                       padding=padding, dilation=dilation,
+                                       stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                                       nonlinearity=nn.ReLU(inplace=True),
+                                       se_ratio=se_ratio, skip=skip, repeat=repeats[j])]
+                )
         # "epilog"
         modules.extend([ResCNNRepeatBlock(_in=cnn_width, out=size, kernel_size=31,
                                           padding=15, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
@@ -862,6 +877,7 @@ class ResCNNRepeatBlock(nn.Module):
                  kernel_size=13,
                  stride=1,
                  padding=0,
+                 dilation=1,
                  dropout=0.1,
                  bnm=0.1,
                  nonlinearity=nn.ReLU(inplace=True),
@@ -880,12 +896,16 @@ class ResCNNRepeatBlock(nn.Module):
                         kernel_size=1, se_ratio=se_ratio)
 
         modules = []
+        if dilation>1:
+            padding = dilation*(kernel_size-1)//2
+
         # just stick all the modules together
         for i in range(0,repeat):
             if i==0:
                 modules.extend([nn.Conv1d(_in, out, kernel_size,
                                           stride=stride,
                                           padding=padding,
+                                          dilation=dilation,
                                           bias=bias),
                                 nn.BatchNorm1d(out,
                                                momentum=bnm),
@@ -895,6 +915,7 @@ class ResCNNRepeatBlock(nn.Module):
                 modules.extend([nn.Conv1d(out, out, kernel_size,
                                           stride=stride,
                                           padding=padding,
+                                          dilation=dilation,
                                           bias=bias),
                                 nn.BatchNorm1d(out,
                                                momentum=bnm),
