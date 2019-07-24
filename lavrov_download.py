@@ -156,19 +156,20 @@ lavrov_post_urls = []
 msg = 'Getting all urls'    
 logger.info(msg)
 
-for i in tqdm(range(0,84)):
-    html = get_html(lavrov_pagination.format(i))
-    soup = BeautifulSoup(html, 'html.parser')
-    block = soup.find("ul", class_ = "anons-list news-anons-list")
+if False:
+    for i in tqdm(range(0,84)):
+        html = get_html(lavrov_pagination.format(i))
+        soup = BeautifulSoup(html, 'html.parser')
+        block = soup.find("ul", class_ = "anons-list news-anons-list")
 
-    posts = list(block.children)
-    for post in posts:
-        try:
-            lavrov_post_urls.append(post.a['href'])
-        except:
-            pass
-        
-pckl(lavrov_post_urls,'lavrov_speech_urls.pickle')
+        posts = list(block.children)
+        for post in posts:
+            try:
+                lavrov_post_urls.append(post.a['href'])
+            except:
+                pass
+
+    pckl(lavrov_post_urls,'lavrov_speech_urls.pickle')
 lavrov_post_urls = upkl('lavrov_speech_urls.pickle')
 
 HOST = 'http://www.mid.ru/'
@@ -179,11 +180,11 @@ data = []
 msg = 'Getting all video urls and transcripts'    
 logger.info(msg)
 
-с = 0
-for lavrov_post_url in tqdm(lavrov_post_urls[0:5]):
+counter = 0
+for lavrov_post_url in tqdm(lavrov_post_urls):
     data.append(download_lavrov_post(lavrov_post_url))
-    с += 1
-    if c%100 == 0:
+    counter += 1
+    if counter%100 == 0:
         pd.DataFrame(data).to_feather('lavrov_save.feather')
         
 df = pd.DataFrame(data)
