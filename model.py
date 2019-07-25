@@ -952,6 +952,56 @@ class SCSE(nn.Module):
         return x           
 
 
+# http://arxiv.org/abs/1904.02619
+class TDS_2D(nn.Module):
+    def __init__(self, 
+                 in_channels,
+                 out_channels,
+                 kernel_size=27,
+                ):
+        super(TDS_2D, self).__init__()
+
+    def forward(self, x, res_input=None):
+
+        return x
+
+
+class TDS_FCN(nn.Module):
+    def __init__(self, 
+                 kernel_size=27,
+                 in_channels,
+                 out_channels,
+                ):
+        super(TDS_FCN, self).__init__()
+
+    def forward(self, x):
+
+        return x
+
+
+class TDS_down(nn.Module):
+    def __init__(self, 
+                 kernel_size=27,
+                 in_channels,
+                 out_channels,
+
+                ):
+        super(TDS_down, self).__init__()
+
+    def forward(self, x):
+
+        return x          
+
+
+class TDS_norm(nn.Module):
+    def __init__(self, 
+                 norm_type='bn'):
+        super(TDS_norm, self).__init__()
+
+    def forward(self, x):
+
+        return x
+
 # http://arxiv.org/abs/1904.03288
 class Jasper_conv_block(nn.Module):
     def __init__(self, 

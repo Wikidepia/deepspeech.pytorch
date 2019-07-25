@@ -1,6 +1,7 @@
 import os
 import re
 import math
+import time
 import pickle
 import requests
 import subprocess
@@ -12,7 +13,11 @@ from bs4 import BeautifulSoup
 
 logger.add("lavrov_log.log")
 
-
+AUDIO_PARAMS = {
+    'sampling_rate':16000,
+    'channels':1
+}
+DEBUG = False
 def pckl(obj,path):
     with open(path, 'wb') as handle:
         pickle.dump(obj, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -62,7 +67,7 @@ def process_one_video(video_url,
     """
     
         
-    ffmpeg_params = "ffmpeg -i '{}' -ac {} -ar {} -vn '{}'".format(
+    ffmpeg_params = "ffmpeg -loglevel error -i '{}' -ac {} -ar {} -vn '{}'".format(
         temp_video_file,
         AUDIO_PARAMS['channels'],
         AUDIO_PARAMS['sampling_rate'],
@@ -74,6 +79,9 @@ def process_one_video(video_url,
     if True:
         download_progress(video_url,
                           temp_video_file)    
+        
+    if os.stat(temp_video_file).st_size < 1000000:
+        raise ValueError('File not downloaded breaking')
         
     stdout = subprocess.Popen(ffmpeg_params,
                               shell=True,
@@ -173,43 +181,52 @@ if False:
 lavrov_post_urls = upkl('lavrov_speech_urls.pickle')
 
 HOST = 'http://www.mid.ru/'
-    
 data = []
 
-# get video urls and text urls
-msg = 'Getting all video urls and transcripts'    
-logger.info(msg)
+if False:
+    # get video urls and text urls
+    msg = 'Getting all video urls and transcripts'    
+    logger.info(msg)
 
-counter = 0
-for lavrov_post_url in tqdm(lavrov_post_urls):
-    data.append(download_lavrov_post(lavrov_post_url))
-    counter += 1
-    if counter%100 == 0:
-        pd.DataFrame(data).to_feather('lavrov_save.feather')
-        
-df = pd.DataFrame(data)
-df['wav_file'] = df['video_url'].apply(lambda x: x.split('/')[-1]+'.wav')
-df.to_feather('lavrov_final.feather')    
+    counter = 0
+    for lavrov_post_url in tqdm(lavrov_post_urls):
+        data.append(download_lavrov_post(lavrov_post_url))
+        counter += 1
+        if counter%100 == 0:
+            pd.DataFrame(data).to_feather('lavrov_save.feather')
 
-msg = 'Downloading all videos'    
-logger.info(msg)
+    df = pd.DataFrame(data)
+    df['wav_file'] = df['video_url'].apply(lambda x: x.split('/')[-1]+'.wav')
+    df.to_feather('lavrov_final.feather')    
 
-video_urls = list(df.video_url.values)
-wav_file_paths = [_.split('/')[-1]+'.wav' for _ in video_urls]
-temp_filenames = ['temp_video_file.mp4'] * len(video_urls)
 
-for (video_url,
-     wav_file_path,
-     temp_filename) in tqdm(zip(video_urls,
-                                wav_file_paths,
-                                temp_filenames), total=len(video_urls)):
-    try:
-        process_one_video(video_url,
-                          temp_filename,
-                          wav_file_path)
-    except Exception as e:
-        msg = 'Video {} caused error {}'.format(video_url,str(e))    
-        logger.error(msg)
-        
-msg = 'Done'    
-logger.info(msg)        
+if True:
+    df = pd.read_feather('lavrov_final.feather')
+    df = df[df['video_url'] != '']
+    msg = 'Downloading all videos'    
+    logger.info(msg)
+
+    video_urls = sorted(list(set(df.video_url.values)))
+    wav_file_paths = [_.split('/')[-1]+'.wav' for _ in video_urls]
+    temp_filenames = ['temp_video_file.mp4'] * len(video_urls)
+
+
+    for i, (video_url,
+            wav_file_path,
+            temp_filename) in enumerate(tqdm(zip(video_urls,
+                                              wav_file_paths,
+                                              temp_filenames), total=len(video_urls))):
+        if i<143:
+            pass
+        else:
+            try:
+                if os.path.isfile(temp_filename):
+                    os.remove(temp_filename)
+                process_one_video(video_url,
+                                  temp_filename,
+                                  wav_file_path)
+            except Exception as e:
+                print(str(e))
+                time.sleep(300)
+    msg = 'Done'    
+    logger.info(msg)
