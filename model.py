@@ -968,9 +968,9 @@ class TDS_2D(nn.Module):
 
 class TDS_FCN(nn.Module):
     def __init__(self, 
-                 kernel_size=27,
                  in_channels,
                  out_channels,
+                 kernel_size=27,
                 ):
         super(TDS_FCN, self).__init__()
 
@@ -981,10 +981,9 @@ class TDS_FCN(nn.Module):
 
 class TDS_down(nn.Module):
     def __init__(self, 
-                 kernel_size=27,
                  in_channels,
                  out_channels,
-
+                 kernel_size=27,
                 ):
         super(TDS_down, self).__init__()
 
@@ -994,9 +993,12 @@ class TDS_down(nn.Module):
 
 
 class TDS_norm(nn.Module):
-    def __init__(self, 
-                 norm_type='bn'):
+    def __init__(self, norm_type, out_channels):
         super(TDS_norm, self).__init__()
+        if norm_type == 'bn':
+            self.norm = nn.BatchNorm2d(out_channels)
+        elif norm_type == 'ln':
+            self.norm = nn.LayerNorm(out_channels)
 
     def forward(self, x):
 

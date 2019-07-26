@@ -901,7 +901,7 @@ if __name__ == '__main__':
         labels = DeepSpeech.get_labels(model)
         audio_conf = DeepSpeech.get_audio_conf(model)
 
-        # in case you need to resume and change audio conf
+        # in case you need to resume and change audio conf manually
         """
         audio_conf = dict(sample_rate=args.sample_rate,
                           window_size=args.window_size,
@@ -933,8 +933,13 @@ if __name__ == '__main__':
         optimizer = build_optimizer(args, parameters)
         if not args.finetune:  # Don't want to restart training
             model = model.to(device)
-            optimizer.load_state_dict(package['optim_dict'])
-            set_lr(args.lr)
+            # when adding phonemes, optimizer state is not full
+            try:
+                optimizer.load_state_dict(package['optim_dict'])
+                set_lr(args.lr)                
+            except:
+                print('Just changing the LR in the optimizer')
+                set_lr(package['optim_dict']['param_groups'][0]['lr'])
             start_epoch = int(package.get('epoch', 1)) - 1  # Index start at 0 for training
             start_iter = package.get('iteration', None)
             start_checkpoint = package.get('checkpoint', 0) or 0

@@ -80,7 +80,7 @@ def replace_encoded(text):
         text = ''.join(_text)
     return text
 
-manifests = ['../data/manifests/train_v05_very_clean_all.csv']
+manifests = ['../data/manifests/train_v05_cleaned_asr_10s.csv']
 
 df = pd.concat([read_manifest(_) for _ in manifests])
 

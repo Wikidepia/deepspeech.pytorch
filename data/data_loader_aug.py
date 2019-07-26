@@ -458,7 +458,21 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 for r in rows:
                     r['cer'] = float(r['cer'])
                     r['wer'] = float(r['wer'])
+                    r['times_used'] = int(r['times_used'])
                 self.curriculum = {row['wav']: row for row in rows}
+                print('Curriculum loaded from file {}'.format(curriculum_filepath))
+                # make sure that curriculum contains
+                # only items we have in the manifest
+                curr_paths = set(self.curriculum.keys())
+                manifest_paths = set([wav for wav, txt, dur in ids])
+                print('Manifest_paths {}, curriculum paths {}'.format(
+                    len(manifest_paths),
+                    len(curr_paths)
+                ))
+                if curr_paths != manifest_paths:
+                    self.curriculum = {wav: self.curriculum[wav] for wav in manifest_paths}
+                    print('Filtering the curriculum file')
+                assert set(self.curriculum.keys()) == set([wav for wav, txt, dur in ids])
         else:
             self.curriculum = {wav: {'wav': wav,
                                      'text': '',
