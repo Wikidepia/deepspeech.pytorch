@@ -7,7 +7,6 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.nn.functional import glu
 from torch.nn.parameter import Parameter
-from torch.nn.utils import weight_norm
 
 
 supported_rnns = {
@@ -15,14 +14,14 @@ supported_rnns = {
     'rnn': nn.RNN,
     'gru': nn.GRU,
     'cnn': None,
-    'glu_small':None,
-    'glu_large':None,
-    'glu_flexible':None,
-    'large_cnn':None,
-    'cnn_residual':None,
-    'cnn_jasper':None,
-    'cnn_jasper_2':None,
-    'cnn_residual_repeat':None
+    'glu_small': None,
+    'glu_large': None,
+    'glu_flexible': None,
+    'large_cnn': None,
+    'cnn_residual': None,
+    'cnn_jasper': None,
+    'cnn_jasper_2': None,
+    'cnn_residual_repeat': None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -183,7 +182,8 @@ DEBUG = 0
 
 
 class DeepSpeech(nn.Module):
-    def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768, nb_layers=6,
+    def __init__(self, rnn_type=nn.LSTM, labels="abc", rnn_hidden_size=768,
+                 nb_layers=6,
                  audio_conf=None,
                  bidirectional=True, context=20, bnm=0.1,
                  dropout=0, cnn_width=256,
@@ -951,58 +951,165 @@ class SCSE(nn.Module):
         x = torch.sigmoid(x_squeezed) * x                
         return x           
 
+class TDS(nn.Module):
+    def __init__(self, config):
+        super(TDS, self).__init__()
+
+        h = config.h # stft or mel
+        self.h = h
+        dropout = config.dropout
+        kernel_size = config.kernel_size
+        
+        blocks =  config.blocks
+        strides = config.strides        
+        repeats =  config.repeats
+        channels = config.channels
+
+        assert len(repeats) == blocks
+        assert len(dropouts) == blocks
+        assert len(channels) == blocks
+        assert len(sub_samplings) == blocks
+        # https://github.com/facebookresearch/wav2letter/blob/master/recipes/librispeech/configs/seq2seq_tds/network.arch#L1
+
+        """
+        REMOVE LATER
+        V -1 NFEAT 1 0
+        C2 1 10 21 1 2 1 -1 -1
+        R
+        DO 0.2
+        LN 3
+        TDS 10 21 80 0.2
+        TDS 10 21 80 0.2
+        C2 10 14 21 1 2 1 -1 -1
+        R
+        DO 0.2
+        LN 3
+        TDS 14 21 80 0.2
+        TDS 14 21 80 0.2
+        TDS 14 21 80 0.2
+        C2 14 18 21 1 2 1 -1 -1
+        R
+        DO 0.2
+        LN 3
+        TDS 18 21 80 0.2
+        TDS 18 21 80 0.2
+        TDS 18 21 80 0.2
+        TDS 18 21 80 0.2
+        TDS 18 21 80 0.2
+        TDS 18 21 80 0.2
+        V 0 1440 1 0
+        RO 1 0 3 2
+        L 1440 1024
+        """        
+
+        channels = [1] + channels
+        modules = []
+        for i,(block, repeat, stride) in enumerate(zip(blocks,
+                                                       repeats,
+                                                       strides)):
+            modules.extend([
+                Conv2dSamePadding(channels[i],channels[i+1],(kernel_size,1),
+                                  stride=(stride, 1)),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+                nn.LayerNorm(h),
+            ])
+            modules.extend([TDSBlock(channels[i+1],
+                                     kernel_size,
+                                     h,
+                                     dropout) for j in range(0,repeat)])
+
+        self.layers = nn.Sequential(*modules)
+
+    def forward(self, x):
+        batch_size = x.size(0)
+        time = x.size(1)
+        h = x.size(2)
+        assert self.h == h
+        # V -1 NFEAT 1 0 (w2l++)
+        # (batch, time, h, 1) (pytorch)
+        x = x.view(batch_size, time, h, 1)
+        x = self.layers(x)
+        # V 0 1440 1 0
+        # RO 1 0 3 2        
+        x = x.view(batch_size, time, self.h * self.channels[-1])
+        return out        
 
 # http://arxiv.org/abs/1904.02619
-class TDS_2D(nn.Module):
+class TDSBlock(nn.Module):
     def __init__(self, 
-                 in_channels,
-                 out_channels,
-                 kernel_size=27,
+                 channels,
+                 kernel_width,
+                 h,
+                 dropout
                 ):
-        super(TDS_2D, self).__init__()
+        super(TDSBlock, self).__init__()
 
-    def forward(self, x, res_input=None):
+        # https://github.com/facebookresearch/wav2letter/blob/153d6665ab008835560854d5071c106400c1cc21/src/module/TDSBlock.cpp#L26-L29
+        # here they have l and l2
+        # though in all of the places l2 equals l
+        self.h = h
+        self.c = channels        
+        l = self.c * self.h
 
-        return x
+        self.conv = nn.Sequential([
+            Conv2dSamePadding(channels,channels,(kernel_width,1),
+                              stride=1),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout)
+        ])
+        self.fc = nn.Sequential([
+            nn.Linear(l, l),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(l, l),
+            # this differs a bit from this 
+            # https://github.com/facebookresearch/wav2letter/blob/153d6665ab008835560854d5071c106400c1cc21/src/module/TDSBlock.cpp#L41
+            # here dropout is applied after reorder + view
+            nn.Dropout(dropout),
+        ])
 
-
-class TDS_FCN(nn.Module):
-    def __init__(self, 
-                 in_channels,
-                 out_channels,
-                 kernel_size=27,
-                ):
-        super(TDS_FCN, self).__init__()
+        # careful here
+        # https://pytorch.org/docs/stable/nn.html#layernorm
+        # https://github.com/facebookresearch/wav2letter/blob/153d6665ab008835560854d5071c106400c1cc21/src/module/TDSBlock.cpp#L46
+        # fc.add(View(af::dim4(-1, h, c, 0)));
+        # If a single integer is used, it is treated as a singleton list
+        # and this module will normalize over the last dimension
+        # which is expected to be of that specific size.
+        self.ln_conv = nn.LayerNorm(c)
+        self.ln_fc = nn.LayerNorm(c)
 
     def forward(self, x):
+        # I guess input should look like
+        # fc.add(View(af::dim4(-1, h, c, 0)))
+        # or (time, h, c, batch) # https://github.com/facebookresearch/wav2letter/blob/master/docs/arch.md#writing-architecture-files
+        # https://github.com/facebookresearch/wav2letter/blob/153d6665ab008835560854d5071c106400c1cc21/src/module/TDSBlock.cpp#L40
+        # in PyTorch it would be
+        # (batch, time, h, c)
+        out = x
+        out = self.conv(out) + out
+        out = self.ln_conv(out)
+        
+        # fc.add(View(af::dim4(-1, l, 1, 0)))
+        # fc.add(Reorder(1, 0, 2, 3))
+        # (time, h, c, batch) => (time, h*с, 1, batch) => (h*с, time, 1, batch)
+        # in Pytorch terms
+        # (batch, time, h, c) => (batch, time, h*с, 1) => (batch, h*с, time, 1)
+        out = out.view(out.size(0), # batch
+                       out.size(1), # time
+                       self.h * self.c, # h * c
+                       1).permute(0, 2, 1, 3)
+        
+        out = self.fc(out) + out
+        # fc.add(Reorder(1, 0, 2, 3));
+        # fc.add(View(af::dim4(-1, h, c, 0)));
+        out = out.permute(0, 2, 1, 3).view(out.size(0), # batch
+                                           out.size(1), # time
+                                           self.h, # h
+                                           self.c) # c   
+        out = self.ln_fc(out)
+        return out
 
-        return x
-
-
-class TDS_down(nn.Module):
-    def __init__(self, 
-                 in_channels,
-                 out_channels,
-                 kernel_size=27,
-                ):
-        super(TDS_down, self).__init__()
-
-    def forward(self, x):
-
-        return x          
-
-
-class TDS_norm(nn.Module):
-    def __init__(self, norm_type, out_channels):
-        super(TDS_norm, self).__init__()
-        if norm_type == 'bn':
-            self.norm = nn.BatchNorm2d(out_channels)
-        elif norm_type == 'ln':
-            self.norm = nn.LayerNorm(out_channels)
-
-    def forward(self, x):
-
-        return x
 
 # http://arxiv.org/abs/1904.03288
 class Jasper_conv_block(nn.Module):
