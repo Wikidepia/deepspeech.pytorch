@@ -933,10 +933,13 @@ if __name__ == '__main__':
         optimizer = build_optimizer(args, parameters)
         if not args.finetune:  # Don't want to restart training
             model = model.to(device)
-            # when adding phonemes, optimizer state is not full
+            # when adding phonemes, optimizer state is not full              
             try:
                 optimizer.load_state_dict(package['optim_dict'])
-                set_lr(args.lr)                
+                # set_lr(args.lr)
+                print('Current LR {}'.format(
+                    optimizer.state_dict()['param_groups'][0]['lr']
+                ))                
             except:
                 print('Just changing the LR in the optimizer')
                 set_lr(package['optim_dict']['param_groups'][0]['lr'])

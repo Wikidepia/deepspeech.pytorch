@@ -4,13 +4,13 @@ from string import punctuation, printable
 punctuation = punctuation.replace('-','')
 printable = printable.replace('\n','')
 
+
 class PhonemeLabels:
     def __init__(self,
                  phoneme_map,
                  phoneme_separator='-', # for readability, phonemes are kept as is
                  space_token = ' ',
-                 blank_token = '_'
-                ):
+                 blank_token = '_'):
         self.phoneme_separator = phoneme_separator
         self.phoneme_map = phoneme_map
         print('Using phoneme map {}'.format(self.phoneme_map))
@@ -30,12 +30,12 @@ class PhonemeLabels:
             split_word = word.split(self.phoneme_separator)
             word_transcript = []
             for c in split_word:
-                cx=False
+                cx = False
                 if c in self.phoneme_map:
-                    cx=True
+                    cx = True
                     code = self.phoneme_map[c]
                 if len(word_transcript)>1 and word_transcript[-1] == code:
-                    cx=True
+                    cx = True
                     code = self.phoneme_map['2']
                 if cx:
                     word_transcript.append(code)

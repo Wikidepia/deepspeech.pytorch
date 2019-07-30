@@ -3,6 +3,7 @@ from collections import OrderedDict
 
 import torch
 import torch.nn as nn
+from functools import reduce
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.nn.functional import glu
@@ -21,7 +22,8 @@ supported_rnns = {
     'cnn_residual': None,
     'cnn_jasper': None,
     'cnn_jasper_2': None,
-    'cnn_residual_repeat': None
+    'cnn_residual_repeat': None,
+    'tds':None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -178,7 +180,7 @@ class Lookahead(nn.Module):
                + ', context=' + str(self.context) + ')'
 
 
-DEBUG = 0
+DEBUG = 1
 
 
 class DeepSpeech(nn.Module):
@@ -211,15 +213,16 @@ class DeepSpeech(nn.Module):
         window_size = self._audio_conf.get("window_size", 0.02)
         num_classes = len(self._labels)
 
-        self.dropout1 = nn.Dropout(p=0.1, inplace=True)
-        self.conv = MaskConv(nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2), padding=(20, 5)),
-            nn.BatchNorm2d(32, momentum=bnm),
-            nn.Hardtanh(0, 20, inplace=True),
-            nn.Conv2d(32, 32, kernel_size=(21, 11), stride=(2, 1), padding=(10, 5)),
-            nn.BatchNorm2d(32, momentum=bnm),
-            nn.Hardtanh(0, 20, inplace=True),
-        ))
+        if self._rnn_type not in ['tds']:
+            self.dropout1 = nn.Dropout(p=0.1, inplace=True)
+            self.conv = MaskConv(nn.Sequential(
+                nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2), padding=(20, 5)),
+                nn.BatchNorm2d(32, momentum=bnm),
+                nn.Hardtanh(0, 20, inplace=True),
+                nn.Conv2d(32, 32, kernel_size=(21, 11), stride=(2, 1), padding=(10, 5)),
+                nn.BatchNorm2d(32, momentum=bnm),
+                nn.Hardtanh(0, 20, inplace=True),
+            ))
 
         if self._rnn_type == 'cnn':  #  wav2letter with some features
             size = rnn_hidden_size
@@ -229,11 +232,11 @@ class DeepSpeech(nn.Module):
                     'bnorm':True,
                     'bnm':self._bnm,
                     'dropout':dropout,
-                    'cnn_width':self._cnn_width, # cnn filters 
+                    'cnn_width':self._cnn_width, # cnn filters
                     'not_glu':self._bidirectional, # glu or basic relu
                     'repeat_layers':self._hidden_layers, # depth, only middle part
                     'kernel_size':13
-                })                
+                })
             )
             self.rnns = nn.Sequential(*modules)
             self.fc = nn.Sequential(
@@ -247,7 +250,7 @@ class DeepSpeech(nn.Module):
                     'bnorm': True,
                     'bnm': self._bnm,
                     'dropout': dropout,
-                    'cnn_width': self._cnn_width,  # cnn filters 
+                    'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
                     'kernel_size': 7,
@@ -264,7 +267,7 @@ class DeepSpeech(nn.Module):
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
                 )
-        elif self._rnn_type == 'cnn_residual_repeat':  # repeat middle convs  
+        elif self._rnn_type == 'cnn_residual_repeat':  # repeat middle convs
             size = rnn_hidden_size
             self.rnns = ResidualRepeatWav2Letter(
                 DotDict({
@@ -288,7 +291,40 @@ class DeepSpeech(nn.Module):
                 self.fc_phoneme = nn.Sequential(
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
-                )               
+                )
+        elif self._rnn_type == 'tds':  # repeat middle convs
+            # TDS config
+            size = rnn_hidden_size
+            input_channels = 161
+            h = 81
+            kernel_size = 21
+            blocks = 3
+            strides = [2, 2, 2]
+            repeats = [2, 3, 6]
+            channels = [10, 14, 18]
+
+            self.rnns = TDS(
+                DotDict({
+                    'dropout': dropout,
+                    'h': h,
+                    'kernel_size': kernel_size,
+                    'blocks': blocks,
+                    'strides': strides,
+                    'repeats': repeats,
+                    'channels': channels,
+                    'output_size': size,
+                    'input_channels': input_channels
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+            # make checkpoints reverse compatible
+            if hasattr(self, '_phoneme_count'):
+                self.fc_phoneme = nn.Sequential(
+                    nn.Conv1d(in_channels=size,
+                              out_channels=self._phoneme_count, kernel_size=1)
+                )
         elif self._rnn_type == 'cnn_jasper':  #  http://arxiv.org/abs/1904.03288
             size = 1024
             big_block_repeat = self._cnn_width // 5
@@ -320,7 +356,7 @@ class DeepSpeech(nn.Module):
                 'activation_fn':nn.ReLU,
                 'repeats':self._hidden_layers,
                 'num_modules':self._cnn_width
-                
+
             }
             print(jasper_config)
             self.rnns = JasperNetEasy(jasper_config)
@@ -336,10 +372,10 @@ class DeepSpeech(nn.Module):
                 })
             )
             # last GLU layer size
-            size = self.rnns.last_channels            
+            size = self.rnns.last_channels
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
-            )            
+            )
         elif self._rnn_type == 'glu_small':
             self.rnns = SmallGLU(
                 DotDict({
@@ -350,7 +386,7 @@ class DeepSpeech(nn.Module):
                 })
             )
             # last GLU layer size
-            size = self.rnns.last_channels            
+            size = self.rnns.last_channels
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
@@ -359,12 +395,12 @@ class DeepSpeech(nn.Module):
                 DotDict({
                     'input_channels':161
                 })
-            )            
+            )
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
         elif self._rnn_type == 'glu_flexible':
-            raise NotImplementedError("Customizable GLU not yet implemented") 
+            raise NotImplementedError("Customizable GLU not yet implemented")
         else:  # original ds2
             # Based on above convolutions and spectrogram size using conv formula (W - F + 2P)/ S+1
             rnn_input_size = int(math.floor((sample_rate * window_size + 1e-2) / 2) + 1)
@@ -400,11 +436,15 @@ class DeepSpeech(nn.Module):
     def forward(self, x, lengths):
         # assert x.is_cuda
         lengths = lengths.cpu().int()
-        output_lengths = self.get_seq_lens(lengths).cuda()
+        if DEBUG:
+            output_lengths = self.get_seq_lens(lengths)
+            print('Projected output lengths {}'.format(output_lengths))
+        else:
+            output_lengths = self.get_seq_lens(lengths).cuda()
 
         if self._rnn_type in ['cnn', 'glu_small', 'glu_large', 'large_cnn',
                               'cnn_residual', 'cnn_jasper', 'cnn_jasper_2',
-                               'cnn_residual_repeat']:
+                              'cnn_residual_repeat', 'tds']:
             x = x.squeeze(1)
             x = self.rnns(x)
             if hasattr(self, '_phoneme_count'):
@@ -432,12 +472,12 @@ class DeepSpeech(nn.Module):
                 assert x.is_cuda
 
             x = self.fc(x)
-        if DEBUG: assert x.is_cuda
+        if not DEBUG: assert x.is_cuda
         x = x.transpose(0, 1)
         # identity in training mode, softmax in eval mode
         outs = F.softmax(x, dim=-1)
-        if DEBUG: assert outs.is_cuda
-        if DEBUG: assert output_lengths.is_cuda
+        if not DEBUG: assert outs.is_cuda
+        if not DEBUG: assert output_lengths.is_cuda
 
         if hasattr(self, '_phoneme_count'):
             x_phoneme = x_phoneme.transpose(0, 1)
@@ -455,9 +495,15 @@ class DeepSpeech(nn.Module):
         :return: 1D Tensor scaled by model
         """
         seq_len = input_length
-        for m in self.conv.modules():
-            if type(m) == nn.modules.conv.Conv2d:
-                seq_len = ((seq_len + 2 * m.padding[1] - m.dilation[1] * (m.kernel_size[1] - 1) - 1) / m.stride[1] + 1)
+        if self._rnn_type not in ['tds']:
+            for m in self.conv.modules():
+                if type(m) == nn.modules.conv.Conv2d:
+                    seq_len = ((seq_len + 2 * m.padding[1] - m.dilation[1] * (m.kernel_size[1] - 1) - 1) / m.stride[1] + 1)
+        elif self._rnn_type == 'tds':
+            # all convolutions are forced to be same
+            seq_len = (seq_len + 0.01) // reduce(lambda x, y: x*y, self.rnns.strides)
+        else:
+            raise NotImplementedError()
         return seq_len.int()
 
     @classmethod
@@ -608,7 +654,7 @@ def Wav2Letter(config):
         if not_glu:
             if bnorm:
                 res.append(nn.BatchNorm1d(out_channels, momentum=bnm))
-        # use self._bidirectional flag as a flag for GLU usage in the CNN                    
+        # use self._bidirectional flag as a flag for GLU usage in the CNN
         if not_glu:
             res.append(nn.ReLU(inplace=True))
         else:
@@ -617,7 +663,7 @@ def Wav2Letter(config):
         if not not_glu:
             if bnorm:
                 res.append(nn.BatchNorm1d(int(out_channels//2),
-                                          momentum=bnm))                    
+                                          momentum=bnm))
         if dropout>0:
             res.append(nn.Dropout(dropout))
         return res
@@ -633,7 +679,7 @@ def Wav2Letter(config):
     # "prolog"
     modules = _block(in_channels=161, out_channels=cnn_width, kernel_size=kernel_size,
                      padding=padding, stride=2, bnorm=bnorm, bias=not bnorm, dropout=dropout)
-    
+
     # main convs
     for _ in range(0,repeat_layers):
         modules.extend(
@@ -651,7 +697,7 @@ def Wav2Letter(config):
 class ResidualWav2Letter(nn.Module):
     def __init__(self,config):
         super(ResidualWav2Letter, self).__init__()
-        
+
         size = config.size
         cnn_width = config.cnn_width
         bnorm = config.bnorm
@@ -662,13 +708,13 @@ class ResidualWav2Letter(nn.Module):
         padding = kernel_size // 2
         se_ratio = config.se_ratio
         skip = config.skip
-        
+
         # "prolog"
         modules = [ResCNNBlock(_in=161, out=cnn_width, kernel_size=kernel_size,
                                padding=padding, stride=2,bnm=bnm, bias=not bnorm, dropout=dropout,
                                nonlinearity=nn.ReLU(inplace=True),
                                se_ratio=0,skip=False)] # no skips and attention
-        
+
         # main convs
         for _ in range(0,repeat_layers):
             modules.extend(
@@ -686,7 +732,7 @@ class ResidualWav2Letter(nn.Module):
                                     padding=0, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
                                     nonlinearity=nn.ReLU(inplace=True),
                                     se_ratio=0,skip=False)]) # no skips and attention
-        
+
         self.layers = nn.Sequential(*modules)
 
     def forward(self, x):
@@ -696,7 +742,7 @@ class ResidualWav2Letter(nn.Module):
 class ResidualRepeatWav2Letter(nn.Module):
     def __init__(self,config):
         super(ResidualRepeatWav2Letter, self).__init__()
-        
+
         size = config.size
         cnn_width = config.cnn_width
         bnorm = config.bnorm
@@ -707,7 +753,7 @@ class ResidualRepeatWav2Letter(nn.Module):
         padding = kernel_size // 2
         se_ratio = config.se_ratio
         skip = config.skip
-        
+
         # "prolog"
         modules = [ResCNNRepeatBlock(_in=161, out=cnn_width, kernel_size=kernel_size,
                                      padding=padding, stride=2,bnm=bnm, bias=not bnorm, dropout=dropout,
@@ -725,7 +771,7 @@ class ResidualRepeatWav2Letter(nn.Module):
 
         repeats = [repeat_start,
                    repeat_mid,
-                   repeat_end]        
+                   repeat_end]
 
         for j in range(0,3):
             for _ in range(0,repeat_layers//3):
@@ -747,11 +793,11 @@ class ResidualRepeatWav2Letter(nn.Module):
                                           padding=0, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
                                           nonlinearity=nn.ReLU(inplace=True),
                                           se_ratio=0, skip=False, repeat=1)]) # no skips and attention
-        
+
         self.layers = nn.Sequential(*modules)
 
     def forward(self, x):
-        return self.layers(x)         
+        return self.layers(x)
 
 
 class GLUBlock(nn.Module):
@@ -764,27 +810,27 @@ class GLUBlock(nn.Module):
                  dropout=0.2,
                  bnm=0.1
                  ):
-        super(GLUBlock, self).__init__()       
-        
+        super(GLUBlock, self).__init__()
+
         self.conv = nn.Conv1d(_in,
                               out,
                               kernel_size,
                               stride=stride,
                               padding=padding)
         # self.conv = weight_norm(self.conv, dim=1)
-        # self.norm = nn.InstanceNorm1d(out)    
+        # self.norm = nn.InstanceNorm1d(out)
         self.norm = nn.BatchNorm1d(out//2,
-                                   momentum=bnm)        
+                                   momentum=bnm)
         self.dropout = nn.Dropout(dropout)
-        
+
     def forward(self, x):
         x = self.conv(x)
         x = glu(x,dim=1)
         x = self.norm(x)
         x = self.dropout(x)
         return x
-    
-    
+
+
 class CNNBlock(nn.Module):
     def __init__(self,
                  _in=1,
@@ -797,8 +843,8 @@ class CNNBlock(nn.Module):
                  nonlinearity=nn.ReLU(inplace=True),
                  bias=True
                  ):
-        super(CNNBlock, self).__init__()       
-        
+        super(CNNBlock, self).__init__()
+
         self.conv = nn.Conv1d(_in,
                               out,
                               kernel_size,
@@ -809,7 +855,7 @@ class CNNBlock(nn.Module):
                                    momentum=bnm)
         self.nonlinearity = nonlinearity
         self.dropout = nn.Dropout(dropout)
-        
+
     def forward(self, x):
         x = self.conv(x)
         x = self.norm(x)
@@ -832,8 +878,8 @@ class ResCNNBlock(nn.Module):
                  se_ratio=0,
                  skip=False
                  ):
-        super(ResCNNBlock, self).__init__()       
-        
+        super(ResCNNBlock, self).__init__()
+
         self.conv = nn.Conv1d(_in,
                               out,
                               kernel_size,
@@ -845,14 +891,14 @@ class ResCNNBlock(nn.Module):
         self.nonlinearity = nonlinearity
         self.dropout = nn.Dropout(dropout)
         self.se_ratio = se_ratio
-        self.skip = skip        
+        self.skip = skip
         self.has_se = (self.se_ratio is not None) and (0 < self.se_ratio <= 1)
         # Squeeze and Excitation layer, if required
         if self.has_se:
             num_squeezed_channels = max(1, int(_in * self.se_ratio))
             self._se_reduce = Conv1dSamePadding(in_channels=out, out_channels=num_squeezed_channels, kernel_size=1)
-            self._se_expand = Conv1dSamePadding(in_channels=num_squeezed_channels, out_channels=out, kernel_size=1)        
-        
+            self._se_expand = Conv1dSamePadding(in_channels=num_squeezed_channels, out_channels=out, kernel_size=1)
+
     def forward(self, x):
         # be a bit more memory efficient during ablations
         if self.skip:
@@ -864,7 +910,7 @@ class ResCNNBlock(nn.Module):
         if self.has_se:
             x_squeezed = F.adaptive_avg_pool1d(x, 1) # channel dimension
             x_squeezed = self._se_expand(relu_fn(self._se_reduce(x_squeezed)))
-            x = torch.sigmoid(x_squeezed) * x                
+            x = torch.sigmoid(x_squeezed) * x
         if self.skip:
             x = x + inputs
         return x
@@ -885,13 +931,13 @@ class ResCNNRepeatBlock(nn.Module):
                  se_ratio=0,
                  skip=False,
                  repeat=1):
-        super(ResCNNRepeatBlock, self).__init__()       
-        
+        super(ResCNNRepeatBlock, self).__init__()
+
         self.skip = skip
         has_se = (se_ratio is not None) and (0 < se_ratio <= 1)
         dropout = nn.Dropout(dropout)
         if has_se:
-            # squeeze after each block    
+            # squeeze after each block
             scse = SCSE(out,
                         kernel_size=1, se_ratio=se_ratio)
 
@@ -922,10 +968,10 @@ class ResCNNRepeatBlock(nn.Module):
                                 nonlinearity,
                                 dropout])
             if has_se:
-                modules.extend([scse])                
-        
+                modules.extend([scse])
+
         self.layers = nn.Sequential(*modules)
-        
+
     def forward(self, x):
         if self.skip:  # be a bit more memory efficient during ablations
             inputs = x
@@ -943,32 +989,36 @@ class SCSE(nn.Module):
         super(SCSE, self).__init__()
         num_squeezed_channels = max(1, int(in_channels * se_ratio))
         self._se_reduce = Conv1dSamePadding(in_channels=in_channels, out_channels=num_squeezed_channels, kernel_size=1)
-        self._se_expand = Conv1dSamePadding(in_channels=num_squeezed_channels, out_channels=in_channels, kernel_size=1)        
+        self._se_expand = Conv1dSamePadding(in_channels=num_squeezed_channels, out_channels=in_channels, kernel_size=1)
 
     def forward(self, x):
         x_squeezed = F.adaptive_avg_pool1d(x, 1) # channel dimension
         x_squeezed = self._se_expand(relu_fn(self._se_reduce(x_squeezed)))
-        x = torch.sigmoid(x_squeezed) * x                
-        return x           
+        x = torch.sigmoid(x_squeezed) * x
+        return x
 
 class TDS(nn.Module):
     def __init__(self, config):
         super(TDS, self).__init__()
 
+        self.input_channels = config.input_channels
         h = config.h # stft or mel
         self.h = h
         dropout = config.dropout
         kernel_size = config.kernel_size
-        
+
         blocks =  config.blocks
-        strides = config.strides        
+        strides = config.strides
+        self.strides = strides
         repeats =  config.repeats
         channels = config.channels
+        output_size = config.output_size
+
+        self.channels = channels
 
         assert len(repeats) == blocks
-        assert len(dropouts) == blocks
         assert len(channels) == blocks
-        assert len(sub_samplings) == blocks
+        assert len(strides) == blocks
         # https://github.com/facebookresearch/wav2letter/blob/master/recipes/librispeech/configs/seq2seq_tds/network.arch#L1
 
         """
@@ -1000,16 +1050,15 @@ class TDS(nn.Module):
         V 0 1440 1 0
         RO 1 0 3 2
         L 1440 1024
-        """        
+        """
 
         channels = [1] + channels
         modules = []
-        for i,(block, repeat, stride) in enumerate(zip(blocks,
-                                                       repeats,
-                                                       strides)):
+        for i, (repeat, stride) in enumerate(zip(repeats,
+                                                 strides)):
             modules.extend([
                 Conv2dSamePadding(channels[i],channels[i+1],(kernel_size,1),
-                                  stride=(stride, 1)),
+                                  stride=(stride, 2 if i==0 else 1)), # adhere to 80 channels in mel, 161 => 80
                 nn.ReLU(inplace=True),
                 nn.Dropout(dropout),
                 nn.LayerNorm(h),
@@ -1019,25 +1068,38 @@ class TDS(nn.Module):
                                      h,
                                      dropout) for j in range(0,repeat)])
 
+        self.linear = nn.Conv1d(in_channels=self.h * self.channels[-1],
+                                out_channels=output_size, kernel_size=1)
         self.layers = nn.Sequential(*modules)
 
     def forward(self, x):
+        if DEBUG: print('Input {}'.format(x.size()))
         batch_size = x.size(0)
         time = x.size(1)
-        h = x.size(2)
-        assert self.h == h
+        # mel input is 161
+        # the inside of the model is 80
+        assert x.size(2) == self.input_channels
         # V -1 NFEAT 1 0 (w2l++)
         # (batch, time, h, 1) (pytorch)
-        x = x.view(batch_size, time, h, 1)
+        # or should it be (batch, 1, time, h) (pytorch)
+        x = x.view(batch_size, 1, time, self.input_channels)
+        if DEBUG: print('First view {}'.format(x.size()))
         x = self.layers(x)
+        if DEBUG: print('After layers {}'.format(x.size()))
+        time_downsampled = x.size(2)
+        time_ratio = (time + 0.1) // time_downsampled
+        if DEBUG: print('Effective network downsampling is {}'.format(time_ratio))
+        assert time_ratio in [2, 4, 8]
         # V 0 1440 1 0
-        # RO 1 0 3 2        
-        x = x.view(batch_size, time, self.h * self.channels[-1])
-        return out        
+        # RO 1 0 3 2
+        x = x.view(batch_size, self.h * self.channels[-1], time_downsampled)
+        x = self.linear(x)
+        if DEBUG: print('After first fc {}'.format(x.size()))
+        return x
 
 # http://arxiv.org/abs/1904.02619
 class TDSBlock(nn.Module):
-    def __init__(self, 
+    def __init__(self,
                  channels,
                  kernel_width,
                  h,
@@ -1049,26 +1111,25 @@ class TDSBlock(nn.Module):
         # here they have l and l2
         # though in all of the places l2 equals l
         self.h = h
-        self.c = channels        
+        self.c = channels
         l = self.c * self.h
 
-        self.conv = nn.Sequential([
+        self.conv = nn.Sequential(
             Conv2dSamePadding(channels,channels,(kernel_width,1),
                               stride=1),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout)
-        ])
-        self.fc = nn.Sequential([
+        )
+        self.fc = nn.Sequential(
             nn.Linear(l, l),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
             nn.Linear(l, l),
-            # this differs a bit from this 
+            # this differs a bit from this
             # https://github.com/facebookresearch/wav2letter/blob/153d6665ab008835560854d5071c106400c1cc21/src/module/TDSBlock.cpp#L41
             # here dropout is applied after reorder + view
             nn.Dropout(dropout),
-        ])
-
+        )
         # careful here
         # https://pytorch.org/docs/stable/nn.html#layernorm
         # https://github.com/facebookresearch/wav2letter/blob/153d6665ab008835560854d5071c106400c1cc21/src/module/TDSBlock.cpp#L46
@@ -1076,8 +1137,8 @@ class TDSBlock(nn.Module):
         # If a single integer is used, it is treated as a singleton list
         # and this module will normalize over the last dimension
         # which is expected to be of that specific size.
-        self.ln_conv = nn.LayerNorm(c)
-        self.ln_fc = nn.LayerNorm(c)
+        self.ln_conv = nn.LayerNorm(self.c)
+        self.ln_fc = nn.LayerNorm(self.c)
 
     def forward(self, x):
         # I guess input should look like
@@ -1085,54 +1146,64 @@ class TDSBlock(nn.Module):
         # or (time, h, c, batch) # https://github.com/facebookresearch/wav2letter/blob/master/docs/arch.md#writing-architecture-files
         # https://github.com/facebookresearch/wav2letter/blob/153d6665ab008835560854d5071c106400c1cc21/src/module/TDSBlock.cpp#L40
         # in PyTorch it would be
-        # (batch, time, h, c)
+        # (batch, time, h, c) or should it be (batch, c, time, h) ?
         out = x
         out = self.conv(out) + out
-        out = self.ln_conv(out)
-        
+        # Given normalized_shape=[10], expected input with shape [*, 10], but got input of size[2, 10, 120, 81]
+        out = self.ln_conv(out.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).contiguous()
+
         # fc.add(View(af::dim4(-1, l, 1, 0)))
         # fc.add(Reorder(1, 0, 2, 3))
         # (time, h, c, batch) => (time, h*с, 1, batch) => (h*с, time, 1, batch)
         # in Pytorch terms
         # (batch, time, h, c) => (batch, time, h*с, 1) => (batch, h*с, time, 1)
+        # or should it be
+        # (batch, c, time, h) => (batch, time, h*с, 1) => (batch, h*с, time, 1)
+        # or
+        # (batch, c, time, h) => (batch, h*с, time, 1) => (batch, time, h*с, 1) ?
         out = out.view(out.size(0), # batch
-                       out.size(1), # time
+                       out.size(2), # time
                        self.h * self.c, # h * c
-                       1).permute(0, 2, 1, 3)
-        
+                       ) # .permute(0, 2, 1, 3) do we need this permute?
+        # if DEBUG: print(out.size())
+        # if DEBUG: print(self.fc(out).size())
         out = self.fc(out) + out
         # fc.add(Reorder(1, 0, 2, 3));
         # fc.add(View(af::dim4(-1, h, c, 0)));
-        out = out.permute(0, 2, 1, 3).view(out.size(0), # batch
-                                           out.size(1), # time
-                                           self.h, # h
-                                           self.c) # c   
-        out = self.ln_fc(out)
+        # (batch, time, h, c) or (batch, c, time, h) ?
+        # .permute(0, 2, 1, 3)
+        out = out.view(out.size(0), # batch
+                       self.c, # c
+                       out.size(1), # time
+                       self.h, # h
+                       )
+        # Given normalized_shape=[10], expected input with shape [*, 10], but got input of size[2, 10, 120, 81]
+        out = self.ln_fc(out.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).contiguous()
         return out
 
 
 # http://arxiv.org/abs/1904.03288
 class Jasper_conv_block(nn.Module):
-    def __init__(self, 
-                 repeat, 
-                 in_channels, 
-                 out_channels, 
-                 kernel_size, 
-                 stride=1, 
-                 dilation=1, 
-                 dropout=0, 
-                 residual=True, 
-                 bn_momentum=0.1, 
-                 bn_eps=1e-05, 
+    def __init__(self,
+                 repeat,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 stride=1,
+                 dilation=1,
+                 dropout=0,
+                 residual=True,
+                 bn_momentum=0.1,
+                 bn_eps=1e-05,
                  activation_fn=None):
         super(Jasper_conv_block, self).__init__()
-        
+
         self.bn =nn.ModuleList([nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum) for i in range(repeat)])
-        
+
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.residual = residual
-        
+
         module_list = []
         if stride==1:
             module_list.append(JasperConv1dSame(self.in_channels, self.out_channels, kernel_size, stride, dilation))
@@ -1143,10 +1214,10 @@ class Jasper_conv_block(nn.Module):
             module_list.append(JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation))
 
         self.module_list = nn.ModuleList(module_list)
-        
+
         self.activation_fn = activation_fn()
         self.dropout = nn.Dropout(p=dropout)
-            
+
     def forward(self, x, res_input=None):
         for i, module in enumerate(self.module_list):
             x = module(x)
@@ -1159,16 +1230,16 @@ class Jasper_conv_block(nn.Module):
 
 
 class JasperConv1dSame(nn.Conv1d):
-    def __init__(self, 
-                 in_channels, 
-                 out_channels, 
-                 kernel_size, 
-                 stride=1, 
-                 dilation=1, 
-                 groups=1, 
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 stride=1,
+                 dilation=1,
+                 groups=1,
                  bias=True):
         super().__init__(in_channels, out_channels, kernel_size, stride, 0, dilation, groups, bias)
-    
+
     def forward(self, x):
         out_len = x.shape[2]
         padding = math.ceil(((out_len - 1) * self.stride[0] + self.kernel_size[0] + \
@@ -1176,12 +1247,12 @@ class JasperConv1dSame(nn.Conv1d):
         if padding > 0:
             x = F.pad(x, (padding//2, padding-padding//2))
         return F.conv1d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
-    
-    
+
+
 class JasperNet(nn.Module):
     def __init__(self, config=None):
         super(JasperNet, self).__init__()
-        
+
         self.dense_residual = config['dense_residual']
         block_list = []
         all_skip_convs = []
@@ -1201,9 +1272,9 @@ class JasperNet(nn.Module):
 
             block_list.append(Jasper_conv_block(repeat=repeat, in_channels=in_channels, out_channels=out_channels,
                                          kernel_size=kernel_size, stride=stride, dilation=dilation,
-                                         dropout=dropout, residual=residual, 
+                                         dropout=dropout, residual=residual,
                                          bn_momentum=bn_momentum, bn_eps=bn_eps, activation_fn=activation_fn))
-            
+
             skip_convs = []
             skip_bns = []
             if residual:
@@ -1213,13 +1284,13 @@ class JasperNet(nn.Module):
                 else:
                     skip_convs.append(nn.Conv1d(in_channels, out_channels, 1, bias=False))
                     skip_bns.append(nn.BatchNorm1d(out_channels, bn_eps, bn_momentum))
-                    
+
             skip_convs = nn.ModuleList(skip_convs)
             skip_bns = nn.ModuleList(skip_bns)
-            
+
             all_skip_convs.append(skip_convs)
             all_skip_bns.append(skip_bns)
-            
+
         self.block_list = nn.ModuleList(block_list)
         self.all_skip_convs = nn.ModuleList(all_skip_convs)
         self.all_skip_bns = nn.ModuleList(all_skip_bns)
@@ -1249,9 +1320,9 @@ class JasperNet(nn.Module):
             return x, skips
         return x
 
-   
+
 class Jasper_non_repeat(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
                  dilation=1, dropout=0, bn_momentum=0.1, bn_eps=1e-05, activation_fn=None):
         super(Jasper_non_repeat, self).__init__()
         self.in_channels = in_channels
@@ -1264,7 +1335,7 @@ class Jasper_non_repeat(nn.Module):
                                          stride=stride, dilation=dilation, padding=kernel_size//2)
         self.activation_fn = activation_fn()
         self.dropout = nn.Dropout(p=dropout)
-    
+
     def forward(self, x):
         x = self.conv(x)
         x = self.bn(x)
@@ -1274,13 +1345,13 @@ class Jasper_non_repeat(nn.Module):
 
 
 class Jasper_repeat(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, 
+    def __init__(self, in_channels, out_channels, kernel_size,
                  repeat_5=False, stride=1, dilation=1, dropout=0, bn_momentum=0.1, bn_eps=1e-05, activation_fn=None):
         super(Jasper_repeat, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.repeat_5 = repeat_5
-        
+
         # main repeats inside block
         repeat_0 = JasperConv1dSame(self.in_channels, self.out_channels, kernel_size, stride, dilation)
         repeat_1 = JasperConv1dSame(self.out_channels, self.out_channels, kernel_size, stride, dilation)
@@ -1296,20 +1367,20 @@ class Jasper_repeat(nn.Module):
         if repeat_5:
             bn_3 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
             bn_4 = nn.BatchNorm1d(num_features=out_channels, eps=bn_eps, momentum=bn_momentum)
-        
+
         self.residual = nn.Conv1d(in_channels, out_channels, 1, bias=False)
         self.res_bn = nn.BatchNorm1d(out_channels, bn_eps, bn_momentum)
-        
+
         self.activation_fn = activation_fn()
         self.dropout = nn.Dropout(p=dropout)
-        
+
         self.rep_0 = nn.Sequential(repeat_0, bn_0, self.activation_fn, self.dropout)
         self.rep_1 = nn.Sequential(repeat_1, bn_1, self.activation_fn, self.dropout)
         self.rep_2 = nn.Sequential(repeat_2, bn_2, self.activation_fn, self.dropout)
         if self.repeat_5:
             self.rep_3 = nn.Sequential(repeat_3, bn_3, self.activation_fn, self.dropout)
             self.rep_4 = nn.Sequential(repeat_4, bn_4, self.activation_fn, self.dropout)
-        
+
     def forward(self, input_, return_skips=False):
         x = self.rep_0(input_)
         x = self.rep_1(x)
@@ -1321,7 +1392,7 @@ class Jasper_repeat(nn.Module):
         x = x + res
         x = self.activation_fn(x)
         x = self.dropout(x)
-        if return_skips: 
+        if return_skips:
             return x, res
         return x, None
 
@@ -1335,55 +1406,55 @@ class JasperNetEasy(nn.Module):
         self.activation_fn = config['activation_fn']
         self.repeats = config['repeats']
         self.num_modules = config['num_modules']
-        
+
         assert self.num_modules in [5,10]
-        
+
         assert self.repeats in [3,5]
         self.repeat_5 = False
         if self.repeats == 5:
             self.repeat_5 = True
-        
-        self.init = Jasper_non_repeat(self.in_channels, out_channels=256, kernel_size=11, stride=2, dilation=1, 
+
+        self.init = Jasper_non_repeat(self.in_channels, out_channels=256, kernel_size=11, stride=2, dilation=1,
                                       dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
-        
-        self.block_0 = Jasper_repeat(in_channels=256, out_channels=256, kernel_size=11, repeat_5=self.repeat_5, stride=1, dilation=1, 
+
+        self.block_0 = Jasper_repeat(in_channels=256, out_channels=256, kernel_size=11, repeat_5=self.repeat_5, stride=1, dilation=1,
                                      dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
-        self.block_1 = Jasper_repeat(in_channels=256, out_channels=384, kernel_size=13, repeat_5=self.repeat_5, stride=1, dilation=1, 
+        self.block_1 = Jasper_repeat(in_channels=256, out_channels=384, kernel_size=13, repeat_5=self.repeat_5, stride=1, dilation=1,
                                      dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
-        self.block_2 = Jasper_repeat(in_channels=384, out_channels=512, kernel_size=17, repeat_5=self.repeat_5, stride=1, dilation=1, 
+        self.block_2 = Jasper_repeat(in_channels=384, out_channels=512, kernel_size=17, repeat_5=self.repeat_5, stride=1, dilation=1,
                                      dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
-        self.block_3 = Jasper_repeat(in_channels=512, out_channels=640, kernel_size=21, repeat_5=self.repeat_5, stride=1, dilation=1, 
+        self.block_3 = Jasper_repeat(in_channels=512, out_channels=640, kernel_size=21, repeat_5=self.repeat_5, stride=1, dilation=1,
                                      dropout=0.3, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
-        self.block_4 = Jasper_repeat(in_channels=640, out_channels=768, kernel_size=25, repeat_5=self.repeat_5, stride=1, dilation=1, 
+        self.block_4 = Jasper_repeat(in_channels=640, out_channels=768, kernel_size=25, repeat_5=self.repeat_5, stride=1, dilation=1,
                                      dropout=0.3, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
-        
+
         if self.num_modules == 10:
             self.block_0_0= Jasper_repeat(in_channels=256, out_channels=256, kernel_size=11, repeat_5=self.repeat_5, stride=1,
-                                          dilation=1, dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, 
+                                          dilation=1, dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps,
                                           activation_fn=self.activation_fn)
-            self.block_1_0 = Jasper_repeat(in_channels=384, out_channels=384, kernel_size=13, repeat_5=self.repeat_5, stride=1, 
-                                           dilation=1, dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, 
+            self.block_1_0 = Jasper_repeat(in_channels=384, out_channels=384, kernel_size=13, repeat_5=self.repeat_5, stride=1,
+                                           dilation=1, dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps,
                                            activation_fn=self.activation_fn)
             self.block_2_0 = Jasper_repeat(in_channels=512, out_channels=512, kernel_size=17, repeat_5=self.repeat_5, stride=1,
-                                           dilation=1, dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, 
+                                           dilation=1, dropout=0.2, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps,
                                            activation_fn=self.activation_fn)
-            self.block_3_0 = Jasper_repeat(in_channels=640, out_channels=640, kernel_size=21, repeat_5=self.repeat_5, stride=1, 
-                                           dilation=1, dropout=0.3, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, 
+            self.block_3_0 = Jasper_repeat(in_channels=640, out_channels=640, kernel_size=21, repeat_5=self.repeat_5, stride=1,
+                                           dilation=1, dropout=0.3, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps,
                                            activation_fn=self.activation_fn)
-            self.block_4_0 = Jasper_repeat(in_channels=768, out_channels=768, kernel_size=25, repeat_5=self.repeat_5, stride=1, dilation=1, 
+            self.block_4_0 = Jasper_repeat(in_channels=768, out_channels=768, kernel_size=25, repeat_5=self.repeat_5, stride=1, dilation=1,
                                            dropout=0.3, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
-            
+
             self.block_0 = nn.Sequential(self.block_0, self.block_0_0)
             self.block_1 = nn.Sequential(self.block_1, self.block_1_0)
             self.block_2 = nn.Sequential(self.block_2, self.block_2_0)
             self.block_3 = nn.Sequential(self.block_3, self.block_3_0)
             self.block_4 = nn.Sequential(self.block_4, self.block_4_0)
-        
-        self.out_0 = Jasper_non_repeat(768, out_channels=896, kernel_size=29, stride=1, dilation=2, 
+
+        self.out_0 = Jasper_non_repeat(768, out_channels=896, kernel_size=29, stride=1, dilation=2,
                                        dropout=0.4, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
-        self.out_1 = Jasper_non_repeat(896, out_channels=1024, kernel_size=1, stride=1, dilation=1, 
+        self.out_1 = Jasper_non_repeat(896, out_channels=1024, kernel_size=1, stride=1, dilation=1,
                                        dropout=0.4, bn_momentum=self.bn_momentum, bn_eps=self.bn_eps, activation_fn=self.activation_fn)
-        
+
     def forward(self, x, return_skips=False):
         if return_skips:
             skips = []
@@ -1397,17 +1468,17 @@ class JasperNetEasy(nn.Module):
         x = self.out_0(x)
         x = self.out_1(x)
         return x
-    
-    
+
+
 class SmallGLU(nn.Module):
     def __init__(self,config):
-        super(SmallGLU, self).__init__()   
+        super(SmallGLU, self).__init__()
         bnm = config.bnm
-        dropout = config.dropout 
+        dropout = config.dropout
         layer_outputs = [100,100,100,125,125,150,175,200,
                          225,250,250,250,300,300,375]
         layer_list = [
-            GLUBlock(config.input_channels,200,13,1,6,dropout, bnm), # 1          
+            GLUBlock(config.input_channels,200,13,1,6,dropout, bnm), # 1
             GLUBlock(100,200,3,1,(1),dropout, bnm), # 2
             GLUBlock(100,200,4,1,(2),dropout, bnm), # 3
             GLUBlock(100,250,5,1,(2),dropout, bnm), # 4
@@ -1421,24 +1492,24 @@ class SmallGLU(nn.Module):
             GLUBlock(250,500,13,1,(6),dropout, bnm), # 12
             GLUBlock(250,600,14,1,(7),dropout, bnm), # 13
             GLUBlock(300,600,15,1,(7),dropout, bnm), # 14
-            GLUBlock(300,750,21,1,(10),dropout, bnm), # 15        
+            GLUBlock(300,750,21,1,(10),dropout, bnm), # 15
         ]
         self.layers = nn.Sequential(*layer_list[:config.layer_num])
         self.last_channels = layer_outputs[config.layer_num-1]
 
     def forward(self, x):
-        return self.layers(x)     
+        return self.layers(x)
 
 
 class LargeGLU(nn.Module):
     def __init__(self,config):
-        super(LargeGLU, self).__init__()       
+        super(LargeGLU, self).__init__()
         layer_outputs = [200,220,242,266,292,321,353,388,426,
                          468,514,565,621,683,751,826,908]
         # in out kw stride padding dropout
         self.layers = nn.Sequential(
             # whole padding in one place
-            GLUBlock(config.input_channels,400,13,1,170,0.2), # 1          
+            GLUBlock(config.input_channels,400,13,1,170,0.2), # 1
             GLUBlock(200,440,14,1,0,0.214), # 2
             GLUBlock(220,484,15,1,0,0.228), # 3
             GLUBlock(242,532,16,1,0,0.245), # 4
@@ -1456,21 +1527,21 @@ class LargeGLU(nn.Module):
             GLUBlock(751,1652,28,1,0,0.552), # 16
             GLUBlock(826,1816,29,1,0,0.590), # 17
         )
-        self.last_channels = layer_outputs[config.layer_num-1]        
+        self.last_channels = layer_outputs[config.layer_num-1]
 
     def forward(self, x):
-        return self.layers(x)     
+        return self.layers(x)
 
 
 class LargeCNN(nn.Module):
     def __init__(self,config):
-        super(LargeCNN, self).__init__()       
+        super(LargeCNN, self).__init__()
         bnm = config.bnm
-        dropout = config.dropout         
+        dropout = config.dropout
         # in out kw stride padding dropout
         self.layers = nn.Sequential(
             # whole padding in one place
-            CNNBlock(config.input_channels,200,13,2,6,dropout, bnm), # 1          
+            CNNBlock(config.input_channels,200,13,2,6,dropout, bnm), # 1
             CNNBlock(200,220,14,1,7, dropout, bnm), # 2
             CNNBlock(220,242,15,1,7, dropout, bnm), # 3
             CNNBlock(242,266,16,1,8, dropout, bnm), # 4
@@ -1488,16 +1559,16 @@ class LargeCNN(nn.Module):
             CNNBlock(751,826,28,1,14, dropout, bnm), # 16
             CNNBlock(826,826,29,1,14, dropout, bnm), # 17
         )
-        self.last_channels = 826        
+        self.last_channels = 826
 
     def forward(self, x):
-        return self.layers(x)  
-    
-    
+        return self.layers(x)
+
+
 class DotDict(dict):
     """
-    a dictionary that supports dot notation 
-    as well as dictionary access notation 
+    a dictionary that supports dot notation
+    as well as dictionary access notation
     usage: d = DotDict() or d = DotDict({'val1':'first'})
     set attributes: d.val2 = 'second' or d['val2'] = 'second'
     get attributes: d.val2 or d['val2']
@@ -1510,7 +1581,7 @@ class DotDict(dict):
         for key, value in dct.items():
             if hasattr(value, 'keys'):
                 value = DotDict(value)
-            self[key] = value    
+            self[key] = value
 
 
 # wrap in module to use in sequential
@@ -1520,7 +1591,7 @@ class GLUModule(nn.Module):
         self.dim = 1
 
     def forward(self, x):
-        return glu(x,dim=self.dim)           
+        return glu(x,dim=self.dim)
 
 
 def relu_fn(x):
@@ -1558,6 +1629,7 @@ class Conv2dSamePadding(nn.Conv2d):
         oh, ow = math.ceil(ih / sh), math.ceil(iw / sw)
         pad_h = max((oh - 1) * self.stride[0] + (kh - 1) * self.dilation[0] + 1 - ih, 0)
         pad_w = max((ow - 1) * self.stride[1] + (kw - 1) * self.dilation[1] + 1 - iw, 0)
+        if DEBUG: print('Padding {}'.format(pad_h, pad_w))
         if pad_h > 0 or pad_w > 0:
             x = F.pad(x, [pad_w//2, pad_w - pad_w//2, pad_h//2, pad_h - pad_h//2])
         return F.conv2d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
