@@ -1091,7 +1091,9 @@ class TDS(nn.Module):
         time_downsampled = x.size(2)
         time_ratio = (time + 10) // time_downsampled
         if DEBUG: print('Effective network downsampling is {}'.format(time_ratio))
-        assert time_ratio in [2, 4, 8]
+        # if time_ratio not in [2, 4, 8]:
+        #    print(time, time_downsampled, time_ratio)
+        # assert time_ratio in [2, 4, 8]
         # V 0 1440 1 0
         # RO 1 0 3 2
         x = x.view(batch_size, self.h * self.channels[-1], time_downsampled)

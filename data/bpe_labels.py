@@ -2,6 +2,7 @@ import re
 import json
 import string
 import pandas as pd
+from loguru import logger
 import sentencepiece as sp
 from string import punctuation, printable
 
@@ -19,6 +20,7 @@ phoneme_2_fake = {phoneme : fake_alphabet[i]
                   for i, phoneme in enumerate(ru_phonemes)}
 fake_2_phoneme = {v: k for k, v in phoneme_2_fake.items()}
 
+logger.add("bpe_labels.log", enqueue=True)
 
 def remove_extra_spaces(text):
     return re.sub(' +', ' ', text)
@@ -32,16 +34,16 @@ class Labels:
                  sp_space_token='▁'):
 
         self.use_phonemes = use_phonemes
-        # will not be used 
+        # will not be used
         # if sp is trained with coverage of 1.0
         # and default params
-        self.remove_sp_tokens = ['<unk>', '<s>', '</s>']
+        self.remove_sp_tokens = ['<unk>', '<s>', '</s>', '2']
         self.sp_space_token = sp_space_token
 
         self.spm = sp.SentencePieceProcessor()
         if self.use_phonemes:
             self.spm.Load(sp_model_phoneme)
-        else:   
+        else:
             self.spm.Load(sp_model)
         sp_tokens = self.spm.get_piece_size()
         print('Sentencepiece model loaded, {} tokens'.format(sp_tokens))
@@ -49,7 +51,7 @@ class Labels:
 
         pieces = pd.DataFrame([{'piece_id': i,
                                 'piece_str': self.spm .IdToPiece(id=i),
-                                'piece_score': self.spm .GetScore(id=i)} 
+                                'piece_score': self.spm .GetScore(id=i)}
                                for i in range(0,sp_tokens)])
         pieces = pieces[~pieces.piece_str.isin(self.remove_sp_tokens+[self.sp_space_token])]
 
@@ -67,6 +69,9 @@ class Labels:
         self.labels_map[" "] = len(self.labels_map)
         self.label_list.append("2")
         self.label_list.append(" ")
+        # print(self.labels_map)
+        # print(self.label_list)        
+        assert len(self.labels_map) == len(self.label_list)
 
         self.labels_map_reverse = {v: k for k, v in self.labels_map.items()}
 
@@ -114,23 +119,28 @@ class Labels:
                 assert str(text.replace('-','')).strip() == str(''.join(out)).strip()
             except Exception as e:
                 print('Error {} with {}'.format(str(e),
-                                                text))         
+                                                text))
         else:
             sp_transcript = self.spm.encode_as_pieces(text)
-     
+
         # print(sp_transcript)
 
         for i, token in enumerate(sp_transcript):
-            if token in self.remove_sp_tokens:
-                pass
-            elif token == self.sp_space_token:
-                # replace spm space token with our space
-                code = self.labels_map[' ']
-            else:
-                code = self.labels_map[token]
-                if transcript and transcript[-1] == code:
-                    code = self.labels_map['2']  # double char
-            transcript.append(code)
+            try:
+                if token in self.remove_sp_tokens:
+                    pass
+                elif token == self.sp_space_token:
+                    # replace spm space token with our space
+                    code = self.labels_map[' ']
+                else:
+                    code = self.labels_map[token]
+                    if transcript and transcript[-1] == code:
+                        code = self.labels_map['2']  # double char
+                transcript.append(code)
+            except Exception as e:
+                msg = 'Error {} with text {}, transcript {}'.format(str(e),text,sp_transcript)
+                logger.error(msg, enqueue=True)
+
         # print(transcript)
         return transcript
 
