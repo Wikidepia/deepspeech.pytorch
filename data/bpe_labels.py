@@ -93,8 +93,12 @@ class Labels:
 
 
     def parse(self, text):
-        text = ''.join([_ for _ in list(text)
-                        if _ not in punctuation and _ in printable])
+        if self.use_phonemes:
+            text = ''.join([_ for _ in list(text)
+                            if _ not in punctuation and _ in printable])
+        else:
+            text = ''.join([_ for _ in list(text)
+                            if _ in russian_alphabet + '- '])
         text = remove_extra_spaces(text).strip()
         if not self.use_phonemes:
             text = text.lower()
