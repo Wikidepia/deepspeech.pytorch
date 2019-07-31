@@ -180,7 +180,7 @@ class Lookahead(nn.Module):
                + ', context=' + str(self.context) + ')'
 
 
-DEBUG = 1
+DEBUG = 0
 
 
 class DeepSpeech(nn.Module):
@@ -435,7 +435,9 @@ class DeepSpeech(nn.Module):
 
     def forward(self, x, lengths):
         # assert x.is_cuda
+        if DEBUG: print(lengths)
         lengths = lengths.cpu().int()
+        if DEBUG: print(lengths)
         if DEBUG:
             output_lengths = self.get_seq_lens(lengths)
             print('Projected output lengths {}'.format(output_lengths))
@@ -1075,10 +1077,10 @@ class TDS(nn.Module):
     def forward(self, x):
         if DEBUG: print('Input {}'.format(x.size()))
         batch_size = x.size(0)
-        time = x.size(1)
+        time = x.size(2)
         # mel input is 161
         # the inside of the model is 80
-        assert x.size(2) == self.input_channels
+        assert x.size(1) == self.input_channels
         # V -1 NFEAT 1 0 (w2l++)
         # (batch, time, h, 1) (pytorch)
         # or should it be (batch, 1, time, h) (pytorch)
@@ -1087,7 +1089,7 @@ class TDS(nn.Module):
         x = self.layers(x)
         if DEBUG: print('After layers {}'.format(x.size()))
         time_downsampled = x.size(2)
-        time_ratio = (time + 0.1) // time_downsampled
+        time_ratio = (time + 10) // time_downsampled
         if DEBUG: print('Effective network downsampling is {}'.format(time_ratio))
         assert time_ratio in [2, 4, 8]
         # V 0 1440 1 0

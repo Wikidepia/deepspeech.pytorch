@@ -364,7 +364,12 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.all_ids = ids
         self.ids = ids
         self.size = len(self.ids)
-        self.labels = Labels(labels)
+        self.use_bpe = audio_conf.get('use_bpe', False)
+        if self.use_bpe:
+            from data.bpe_labels import Labels as Labels
+            self.labels = Labels(use_phonemes=False)
+        else:
+            self.labels = Labels(labels)
 
         self.aug_type = 0
 

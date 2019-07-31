@@ -39,9 +39,10 @@ parser.add_argument('--sample-rate', default=16000, type=int, help='Sample rate'
 parser.add_argument('--batch-size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--val-batch-size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--num-workers', default=4, type=int, help='Number of workers used in data-loading')
-parser.add_argument('--labels-path', default='labels.json', help='Contains all characters for transcription')
 
+parser.add_argument('--labels-path', default='labels.json', help='Contains all characters for transcription')
 parser.add_argument('--phonemes-path', default='phonemes_ru.json', help='Contains all phonemes for the Russian language')
+parser.add_argument('--use-bpe', dest='use_bpe', action='store_true', help='Use random tempo and gain perturbations.')
 parser.add_argument('--use-phonemes',  action='store_true', default=False)
 
 parser.add_argument('--window-size', default=.02, type=float, help='Window size for spectrogram in seconds')
@@ -597,6 +598,7 @@ class Trainer:
         else:
             inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
+
         # measure data loading time
         data_time.update(time.time() - self.end)
 
@@ -972,8 +974,15 @@ if __name__ == '__main__':
                 if package.get('trainval_checkpoint_cer_results') is not None and start_checkpoint > 0:
                     trainval_checkpoint_plots.plot_history(start_checkpoint)                
     else:
-        with open(args.labels_path) as label_file:
-            labels = str(''.join(json.load(label_file)))
+        if args.use_bpe:
+            from data.bpe_labels import Labels as BPELabels
+            labels = BPELabels(use_phonemes=False)
+            # list instead of string
+            labels = labels.label_list
+        else:
+            with open(args.labels_path) as label_file:
+                # labels is a string
+                labels = str(''.join(json.load(label_file)))
 
         audio_conf = dict(sample_rate=args.sample_rate,
                           window_size=args.window_size,
@@ -983,7 +992,9 @@ if __name__ == '__main__':
                           noise_prob=args.noise_prob,
                           noise_levels=(args.noise_min, args.noise_max),
                           aug_prob_8khz=args.aug_prob_8khz,
-                          aug_prob_spect=args.aug_prob_spect)
+                          aug_prob_spect=args.aug_prob_spect,
+                          use_bpe=args.use_bpe
+                          )
 
         if args.use_phonemes:
             audio_conf['phoneme_count'] = len(phoneme_map)

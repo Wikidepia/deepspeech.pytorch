@@ -5,16 +5,16 @@ import pandas as pd
 import sentencepiece as sp
 from string import punctuation, printable
 
+russian_alphabet = 'АаБбВвГгДдЕеЁёЖжЗзИиЙйКкЛлМмНнОоПпРрСсТтУуФфХхЦцЧчШшЩщЪъЫыЬьЭэЮюЯя'
 punctuation = punctuation.replace('-','')
-printable = printable.replace('\n','')
+printable = printable.replace('\n','') + russian_alphabet
 
-with open('../phonemes_ru.json') as json_file:
+with open('phonemes_ru.json') as json_file:
     ru_phonemes = json.load(json_file)
 
 # a hack to use BPE with phonemes
 # you cannot just apply sp because phonemes have 2-3 letter codes
-fake_alphabet = string.ascii_letters + \
-                'АаБбВвГгДдЕеЁёЖжЗзИиЙйКкЛлМмНнОоПпРрСсТтУуФфХхЦцЧчШшЩщЪъЫыЬьЭэЮюЯя'
+fake_alphabet = string.ascii_letters + russian_alphabet
 phoneme_2_fake = {phoneme : fake_alphabet[i]
                   for i, phoneme in enumerate(ru_phonemes)}
 fake_2_phoneme = {v: k for k, v in phoneme_2_fake.items()}
@@ -27,8 +27,8 @@ def remove_extra_spaces(text):
 class Labels:
     def __init__(self,
                  use_phonemes=False,
-                 sp_model='../spm_train_v05_cleaned_asr_10s_phoneme.model',
-                 sp_model_phoneme='../phoneme_spm_train_v05_cleaned_asr_10s_phoneme.model',
+                 sp_model='data/spm_train_v05_cleaned_asr_10s_phoneme.model',
+                 sp_model_phoneme='data/phoneme_spm_train_v05_cleaned_asr_10s_phoneme.model',
                  sp_space_token='▁'):
 
         self.use_phonemes = use_phonemes
@@ -45,6 +45,7 @@ class Labels:
             self.spm.Load(sp_model)
         sp_tokens = self.spm.get_piece_size()
         print('Sentencepiece model loaded, {} tokens'.format(sp_tokens))
+        print('Test encoding of the sp model {}'.format(self.spm.encode_as_pieces('пушистый рыжий котик')))
 
         pieces = pd.DataFrame([{'piece_id': i,
                                 'piece_str': self.spm .IdToPiece(id=i),
@@ -52,12 +53,21 @@ class Labels:
                                for i in range(0,sp_tokens)])
         pieces = pieces[~pieces.piece_str.isin(self.remove_sp_tokens+[self.sp_space_token])]
 
+        self.label_list = []
+
         # reserve 0 for CTC blank
         self.labels_map = {"_" : 0}
+        self.label_list.append("_")
+
         for key in list(pieces.piece_str.values):
             self.labels_map[key] = len(self.labels_map)
-        self.labels_map['2'] = len(self.labels_map)
-        self.labels_map[' '] = len(self.labels_map)
+            self.label_list.append(key)
+
+        self.labels_map["2"] = len(self.labels_map)
+        self.labels_map[" "] = len(self.labels_map)
+        self.label_list.append("2")
+        self.label_list.append(" ")
+
         self.labels_map_reverse = {v: k for k, v in self.labels_map.items()}
 
     def encode_phonemes(text):
@@ -78,13 +88,11 @@ class Labels:
 
 
     def parse(self, text):
-
         text = ''.join([_ for _ in list(text)
                         if _ not in punctuation and _ in printable])
         text = remove_extra_spaces(text).strip()
         if not self.use_phonemes:
             text = text.lower()
-        # print(text)
 
         transcript = []
 
@@ -107,7 +115,6 @@ class Labels:
             except Exception as e:
                 print('Error {} with {}'.format(str(e),
                                                 text))         
-
         else:
             sp_transcript = self.spm.encode_as_pieces(text)
      
@@ -124,7 +131,7 @@ class Labels:
                 if transcript and transcript[-1] == code:
                     code = self.labels_map['2']  # double char
             transcript.append(code)
-
+        # print(transcript)
         return transcript
 
     def render_transcript(self, codes):
