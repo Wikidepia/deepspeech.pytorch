@@ -299,7 +299,7 @@ class DeepSpeech(nn.Module):
             h = 81
             kernel_size = 21
             blocks = 3
-            strides = [2, 2, 2]
+            strides = [2, 2, 1]
             repeats = [2, 3, 6]
             channels = [10, 14, 18]
 
@@ -1063,7 +1063,9 @@ class TDS(nn.Module):
                                   stride=(stride, 2 if i==0 else 1)), # adhere to 80 channels in mel, 161 => 80
                 nn.ReLU(inplace=True),
                 nn.Dropout(dropout),
-                nn.LayerNorm(h),
+                SeqLayerNormView(), # move the normalized channel to the last channel
+                nn.LayerNorm(channels[i+1]),
+                SeqLayerNormRestore() # revert
             ])
             modules.extend([TDSBlock(channels[i+1],
                                      kernel_size,
@@ -1638,6 +1640,23 @@ class Conv2dSamePadding(nn.Conv2d):
             x = F.pad(x, [pad_w//2, pad_w - pad_w//2, pad_h//2, pad_h - pad_h//2])
         return F.conv2d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
+
+# a hack to use LayerNorm in sequential
+# move the normalized dimension to the last dimension
+class SeqLayerNormView(nn.Module):
+	def __init__(self):
+		super(SeqLayerNormView, self).__init__()
+	def forward(self, x):
+		return x.permute(0, 2, 3, 1) 
+
+
+# restore the original order
+class SeqLayerNormRestore(nn.Module):
+	def __init__(self):
+		super(SeqLayerNormRestore, self).__init__()
+	def forward(self, x):
+		return x.permute(0, 3, 1, 2).contiguous()
+       
 
 def main():
     import os.path

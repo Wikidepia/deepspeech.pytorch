@@ -147,9 +147,15 @@ def build_optimizer(args_, parameters_):
 
     if args_.optimizer=='sgd':
         print('Using SGD')
-        return torch.optim.SGD(parameters_, lr=args_.lr,
-                               momentum=args_.momentum, nesterov=True,
-                               weight_decay=args_.weight_decay)
+        try:
+            return torch.optim.SGD(parameters_, lr=args_.lr,
+                                momentum=args_.momentum, nesterov=True,
+                                weight_decay=args_.weight_decay)
+        except:
+            # wo nesterov
+            return torch.optim.SGD(parameters_, lr=args_.lr,
+                        momentum=args_.momentum, nesterov=False,
+                        weight_decay=args_.weight_decay)
     elif args_.optimizer=='adam':
         print('Using ADAM')
         return torch.optim.Adam(parameters_, lr=args_.lr)   
