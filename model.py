@@ -23,7 +23,8 @@ supported_rnns = {
     'cnn_jasper': None,
     'cnn_jasper_2': None,
     'cnn_residual_repeat': None,
-    'tds':None
+    'tds':None,
+    'cnn_residual_repeat_sep': None,
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -292,6 +293,32 @@ class DeepSpeech(nn.Module):
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
                 )
+        elif self._rnn_type == 'cnn_residual_repeat_sep':  # repeat middle convs
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable':True,
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+            # make checkpoints reverse compatible
+            if hasattr(self, '_phoneme_count'):
+                self.fc_phoneme = nn.Sequential(
+                    nn.Conv1d(in_channels=size,
+                              out_channels=self._phoneme_count, kernel_size=1)
+                )                
         elif self._rnn_type == 'tds':  # repeat middle convs
             # TDS config
             size = rnn_hidden_size
@@ -446,7 +473,7 @@ class DeepSpeech(nn.Module):
 
         if self._rnn_type in ['cnn', 'glu_small', 'glu_large', 'large_cnn',
                               'cnn_residual', 'cnn_jasper', 'cnn_jasper_2',
-                              'cnn_residual_repeat', 'tds']:
+                              'cnn_residual_repeat', 'tds','cnn_residual_repeat_sep']:
             x = x.squeeze(1)
             x = self.rnns(x)
             if hasattr(self, '_phoneme_count'):
@@ -756,11 +783,18 @@ class ResidualRepeatWav2Letter(nn.Module):
         se_ratio = config.se_ratio
         skip = config.skip
 
+        separable = config.separable if 'separable' in config else False
+        if separable:
+            print('Using a separable CNN')
+            Block = SeparableRepeatBlock
+        else:
+            Block = ResCNNRepeatBlock
+
         # "prolog"
-        modules = [ResCNNRepeatBlock(_in=161, out=cnn_width, kernel_size=kernel_size,
-                                     padding=padding, stride=2,bnm=bnm, bias=not bnorm, dropout=dropout,
-                                     nonlinearity=nn.ReLU(inplace=True),
-                                     se_ratio=0, skip=False, repeat=1)] # no skips and attention
+        modules = [Block(_in=161, out=cnn_width, kernel_size=kernel_size,
+                         padding=padding, stride=2,bnm=bnm, bias=not bnorm, dropout=dropout,
+                         nonlinearity=nn.ReLU(inplace=True),
+                         se_ratio=0, skip=False, repeat=1)] # no skips and attention
         # main convs
         # 3 blocks
         dilated_blocks = [0]
@@ -780,21 +814,21 @@ class ResidualRepeatWav2Letter(nn.Module):
                 # 1221 dilation blocks
                 dilation = 1 + (j in dilated_blocks) * (_ in dilated_subblocks) * (dilation_level - 1)
                 modules.extend(
-                    [ResCNNRepeatBlock(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
-                                       padding=padding, dilation=dilation,
-                                       stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
-                                       nonlinearity=nn.ReLU(inplace=True),
-                                       se_ratio=se_ratio, skip=skip, repeat=repeats[j])]
+                    [Block(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
+                           padding=padding, dilation=dilation,
+                           stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                           nonlinearity=nn.ReLU(inplace=True),
+                           se_ratio=se_ratio, skip=skip, repeat=repeats[j])]
                 )
         # "epilog"
-        modules.extend([ResCNNRepeatBlock(_in=cnn_width, out=size, kernel_size=31,
-                                          padding=15, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
-                                          nonlinearity=nn.ReLU(inplace=True),
-                                          se_ratio=0, skip=False, repeat=1)]) # no skips and attention
-        modules.extend([ResCNNRepeatBlock(_in=size, out=size, kernel_size=1,
-                                          padding=0, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
-                                          nonlinearity=nn.ReLU(inplace=True),
-                                          se_ratio=0, skip=False, repeat=1)]) # no skips and attention
+        modules.extend([Block(_in=cnn_width, out=size, kernel_size=31,
+                              padding=15, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                              nonlinearity=nn.ReLU(inplace=True),
+                              se_ratio=0, skip=False, repeat=1)]) # no skips and attention
+        modules.extend([Block(_in=size, out=size, kernel_size=1,
+                              padding=0, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                              nonlinearity=nn.ReLU(inplace=True),
+                              se_ratio=0, skip=False, repeat=1)]) # no skips and attention
 
         self.layers = nn.Sequential(*modules)
 
@@ -983,6 +1017,84 @@ class ResCNNRepeatBlock(nn.Module):
         return x
 
 
+class SeparableRepeatBlock(nn.Module):
+    def __init__(self,
+                 _in=1,
+                 out=400,
+                 kernel_size=13,
+                 stride=1,
+                 padding=0,
+                 dilation=1,
+                 dropout=0.1,
+                 bnm=0.1,
+                 nonlinearity=nn.ReLU(inplace=True),
+                 bias=True,
+                 se_ratio=0,
+                 skip=False,
+                 repeat=1,
+                 mix_channels=True):
+        super(SeparableRepeatBlock, self).__init__()
+
+        groups = 12
+        self.skip = skip
+        has_se = (se_ratio is not None) and (0 < se_ratio <= 1)
+        dropout = nn.Dropout(dropout)
+        if has_se:
+            # squeeze after each block
+            scse = SCSE(out,
+                        kernel_size=1, se_ratio=se_ratio)
+
+        modules = []
+        if dilation>1:
+            padding = dilation*(kernel_size-1)//2
+
+        # just stick all the modules together
+        for i in range(0,repeat):
+            if i==0:
+                modules.extend([nn.Conv1d(_in, out, kernel_size,
+                                          stride=stride,
+                                          padding=padding,
+                                          dilation=dilation,
+                                          groups=groups if (_in % groups) == 0 else 1,
+                                          bias=bias),
+                                nn.BatchNorm1d(out,
+                                               momentum=bnm),
+                                nonlinearity,
+                                dropout])
+            else:
+                modules.extend([nn.Conv1d(out, out, kernel_size,
+                                          stride=stride,
+                                          padding=padding,
+                                          dilation=dilation,
+                                          groups=groups if (out % groups) == 0 else 1,
+                                          bias=bias),
+                                nn.BatchNorm1d(out,
+                                               momentum=bnm),
+                                nonlinearity,
+                                dropout])
+            if has_se:
+                # apply lightweight attention layer
+                modules.extend([scse])
+            if mix_channels:
+                # mix the separated channels
+                modules.extend([Conv1dSamePadding(in_channels=out,
+                                                  out_channels=out,
+                                                  kernel_size=1),
+                                nn.BatchNorm1d(out,
+                                               momentum=bnm),
+                                nonlinearity,
+                                dropout])
+        self.layers = nn.Sequential(*modules)
+
+    def forward(self, x):
+        if self.skip:  # be a bit more memory efficient during ablations
+            inputs = x
+        x = self.layers(x)
+        if self.skip:
+            x = x + inputs
+        return x
+
+
  # SCSE attention block https://arxiv.org/abs/1803.02579
 class SCSE(nn.Module):
     def __init__(self,
@@ -1064,7 +1176,7 @@ class TDS(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Dropout(dropout),
                 SeqLayerNormView(), # move the normalized channel to the last channel
-                nn.LayerNorm(channels[i+1]),
+                nn.LayerNorm([channels[i+1], h]),
                 SeqLayerNormRestore() # revert
             ])
             modules.extend([TDSBlock(channels[i+1],
@@ -1143,8 +1255,8 @@ class TDSBlock(nn.Module):
         # If a single integer is used, it is treated as a singleton list
         # and this module will normalize over the last dimension
         # which is expected to be of that specific size.
-        self.ln_conv = nn.LayerNorm(self.c)
-        self.ln_fc = nn.LayerNorm(self.c)
+        self.ln_conv = nn.LayerNorm([self.c, self.h])
+        self.ln_fc = nn.LayerNorm([self.c, self.h])
 
     def forward(self, x):
         # I guess input should look like
@@ -1156,7 +1268,7 @@ class TDSBlock(nn.Module):
         out = x
         out = self.conv(out) + out
         # Given normalized_shape=[10], expected input with shape [*, 10], but got input of size[2, 10, 120, 81]
-        out = self.ln_conv(out.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).contiguous()
+        out = self.ln_conv(out.permute(0, 2, 1, 3)).permute(0, 2, 1, 3).contiguous()
 
         # fc.add(View(af::dim4(-1, l, 1, 0)))
         # fc.add(Reorder(1, 0, 2, 3))
@@ -1184,7 +1296,7 @@ class TDSBlock(nn.Module):
                        self.h, # h
                        )
         # Given normalized_shape=[10], expected input with shape [*, 10], but got input of size[2, 10, 120, 81]
-        out = self.ln_fc(out.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).contiguous()
+        out = self.ln_fc(out.permute(0, 2, 1, 3)).permute(0, 2, 1, 3).contiguous()
         return out
 
 
@@ -1647,7 +1759,7 @@ class SeqLayerNormView(nn.Module):
 	def __init__(self):
 		super(SeqLayerNormView, self).__init__()
 	def forward(self, x):
-		return x.permute(0, 2, 3, 1) 
+		return x.permute(0, 2, 1, 3) 
 
 
 # restore the original order
@@ -1655,7 +1767,7 @@ class SeqLayerNormRestore(nn.Module):
 	def __init__(self):
 		super(SeqLayerNormRestore, self).__init__()
 	def forward(self, x):
-		return x.permute(0, 3, 1, 2).contiguous()
+		return x.permute(0, 2, 1, 3).contiguous()
        
 
 def main():
