@@ -9,11 +9,16 @@ from torch.autograd import Variable
 from torch.nn.functional import glu
 from torch.nn.parameter import Parameter
 
+try:
+    from sru import SRU
+except:
+    print('SRU not installed')
 
 supported_rnns = {
     'lstm': nn.LSTM,
     'rnn': nn.RNN,
     'gru': nn.GRU,
+    'sru': None,
     'cnn': None,
     'glu_small': None,
     'glu_large': None,
@@ -25,6 +30,7 @@ supported_rnns = {
     'cnn_residual_repeat': None,
     'tds':None,
     'cnn_residual_repeat_sep': None,
+    'cnn_residual_repeat_sep_bpe':None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -91,8 +97,14 @@ class BatchRNN(nn.Module):
         self.bidirectional = bidirectional
         self.bnm = bnm
         self.batch_norm = SequenceWise(nn.BatchNorm1d(input_size, momentum=bnm)) if batch_norm else None
-        self.rnn = rnn_type(input_size=input_size, hidden_size=hidden_size,
-                            bidirectional=bidirectional, bias=True)
+        if rnn_type == 'sru':
+            self.sru = True
+            self.rnn = SRU(input_size, hidden_size,
+                           bidirectional=bidirectional, rescale = True)        
+        else:
+            self.sru = False
+            self.rnn = rnn_type(input_size=input_size, hidden_size=hidden_size,
+                                bidirectional=bidirectional, bias=True)
         self.num_directions = 2 if bidirectional else 1
 
     def flatten_parameters(self):
@@ -104,9 +116,11 @@ class BatchRNN(nn.Module):
         if self.batch_norm is not None:
             x = self.batch_norm(x)
             # x = x._replace(data=self.batch_norm(x.data))
-        x = nn.utils.rnn.pack_padded_sequence(x, output_lengths.data.cpu().numpy())
+        if not self.sru:
+            x = nn.utils.rnn.pack_padded_sequence(x, output_lengths.data.cpu().numpy())
         x, h = self.rnn(x)
-        x, _ = nn.utils.rnn.pad_packed_sequence(x, total_length=max_seq_length)
+        if not self.sru:        
+            x, _ = nn.utils.rnn.pad_packed_sequence(x, total_length=max_seq_length)
         if self.bidirectional:
             x = x.view(x.size(0), x.size(1), 2, -1).sum(2).view(x.size(0), x.size(1), -1)  # (TxNxH*2) -> (TxNxH) by sum
         # x = x.to('cuda')
@@ -318,7 +332,34 @@ class DeepSpeech(nn.Module):
                 self.fc_phoneme = nn.Sequential(
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
-                )                
+                )
+        elif self._rnn_type == 'cnn_residual_repeat_sep_bpe':  # repeat middle convs
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable': True,
+                    'add_downsample': 2,
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+            # make checkpoints reverse compatible
+            if hasattr(self, '_phoneme_count'):
+                self.fc_phoneme = nn.Sequential(
+                    nn.Conv1d(in_channels=size,
+                              out_channels=self._phoneme_count, kernel_size=1)
+                )                              
         elif self._rnn_type == 'tds':  # repeat middle convs
             # TDS config
             size = rnn_hidden_size
@@ -436,12 +477,17 @@ class DeepSpeech(nn.Module):
             rnn_input_size *= 32
 
             rnns = []
-            rnn = BatchRNN(input_size=rnn_input_size, hidden_size=rnn_hidden_size, rnn_type=supported_rnns[rnn_type],
+            if rnn_type == 'sru':
+                pass
+            else:
+                rnn_type = supported_rnns[rnn_type]
+
+            rnn = BatchRNN(input_size=rnn_input_size, hidden_size=rnn_hidden_size, rnn_type=rnn_type,
                            bidirectional=bidirectional, batch_norm=False)
             rnns.append(('0', rnn))
             for x in range(nb_layers - 1):
                 rnn = BatchRNN(input_size=rnn_hidden_size, hidden_size=rnn_hidden_size,
-                               rnn_type=supported_rnns[rnn_type],
+                               rnn_type=rnn_type,
                                bidirectional=bidirectional, bnm=bnm)
                 rnns.append(('%d' % (x + 1), rnn))
             self.rnns = nn.Sequential(OrderedDict(rnns))
@@ -473,7 +519,8 @@ class DeepSpeech(nn.Module):
 
         if self._rnn_type in ['cnn', 'glu_small', 'glu_large', 'large_cnn',
                               'cnn_residual', 'cnn_jasper', 'cnn_jasper_2',
-                              'cnn_residual_repeat', 'tds','cnn_residual_repeat_sep']:
+                              'cnn_residual_repeat', 'tds','cnn_residual_repeat_sep',
+                              'cnn_residual_repeat_sep_bpe']:
             x = x.squeeze(1)
             x = self.rnns(x)
             if hasattr(self, '_phoneme_count'):
@@ -514,6 +561,7 @@ class DeepSpeech(nn.Module):
             # phoneme outputs will have the same length
             return x, outs, output_lengths, x_phoneme, outs_phoneme
         else:
+            # print(output_lengths, x.size())
             return x, outs, output_lengths
 
     def get_seq_lens(self, input_length):
@@ -524,7 +572,11 @@ class DeepSpeech(nn.Module):
         :return: 1D Tensor scaled by model
         """
         seq_len = input_length
-        if self._rnn_type not in ['tds']:
+        if self._rnn_type in ['cnn_residual_repeat_sep_bpe']:
+            for m in self.rnns.modules():
+                if type(m) == nn.modules.conv.Conv1d:
+                    seq_len = ((seq_len + 2 * m.padding[0] - m.dilation[0] * (m.kernel_size[0] - 1) - 1) / m.stride[0] + 1)
+        elif self._rnn_type not in ['tds']:
             for m in self.conv.modules():
                 if type(m) == nn.modules.conv.Conv2d:
                     seq_len = ((seq_len + 2 * m.padding[1] - m.dilation[1] * (m.kernel_size[1] - 1) - 1) / m.stride[1] + 1)
@@ -783,6 +835,20 @@ class ResidualRepeatWav2Letter(nn.Module):
         se_ratio = config.se_ratio
         skip = config.skip
 
+        downsampled_blocks = []
+        downsampled_subblocks = []
+        if 'add_downsample' in config:
+            assert config.add_downsample in [2, 4]
+            # always at the beginning of each block
+            downsampled_subblocks.append(0)
+            if config.add_downsample == 2:
+                # prolog has stride 2
+                # add one more stride after one block
+                downsampled_blocks.append(1)
+            elif config.add_downsample == 4:
+                # add one more stride after one more block                
+                downsampled_blocks.append(2)
+
         separable = config.separable if 'separable' in config else False
         if separable:
             print('Using a separable CNN')
@@ -792,7 +858,7 @@ class ResidualRepeatWav2Letter(nn.Module):
 
         # "prolog"
         modules = [Block(_in=161, out=cnn_width, kernel_size=kernel_size,
-                         padding=padding, stride=2,bnm=bnm, bias=not bnorm, dropout=dropout,
+                         padding=padding, stride=2, bnm=bnm, bias=not bnorm, dropout=dropout,
                          nonlinearity=nn.ReLU(inplace=True),
                          se_ratio=0, skip=False, repeat=1)] # no skips and attention
         # main convs
@@ -809,14 +875,25 @@ class ResidualRepeatWav2Letter(nn.Module):
                    repeat_mid,
                    repeat_end]
 
-        for j in range(0,3):
-            for _ in range(0,repeat_layers//3):
+        for j in range(0, 3):
+            for _ in range(0, repeat_layers//3):
                 # 1221 dilation blocks
                 dilation = 1 + (j in dilated_blocks) * (_ in dilated_subblocks) * (dilation_level - 1)
+                stride = 1 + (j in downsampled_blocks) * (_ in downsampled_subblocks) * 1
+                if stride == 2:
+                    # add extra downsampling layer
+                    print('Downsampling block {} / subblock {}'.format(j, _))
+                    modules.extend(
+                        [Block(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
+                            padding=padding, dilation=dilation,
+                            stride=stride, bnm=bnm, bias=not bnorm, dropout=dropout,
+                            nonlinearity=nn.ReLU(inplace=True),
+                            se_ratio=0, skip=False, repeat=1)]
+                    )                    
                 modules.extend(
                     [Block(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
                            padding=padding, dilation=dilation,
-                           stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                           stride=1, bnm=bnm, bias=not bnorm, dropout=dropout,
                            nonlinearity=nn.ReLU(inplace=True),
                            se_ratio=se_ratio, skip=skip, repeat=repeats[j])]
                 )
