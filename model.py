@@ -323,6 +323,7 @@ class DeepSpeech(nn.Module):
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable':True,
+                    'dilated_blocks': [0]                    
                 })
             )
             self.fc = nn.Sequential(
@@ -350,6 +351,7 @@ class DeepSpeech(nn.Module):
                     'skip': True,
                     'separable': True,
                     'add_downsample': 2,
+                    'dilated_blocks': [0]
                 })
             )
             self.fc = nn.Sequential(
@@ -377,6 +379,7 @@ class DeepSpeech(nn.Module):
                     'skip': True,
                     'separable': True,
                     'add_downsample': 4,
+                    'dilated_blocks': [] # no dilation
                 })
             )
             self.fc = nn.Sequential(
@@ -893,7 +896,7 @@ class ResidualRepeatWav2Letter(nn.Module):
                          se_ratio=0, skip=False, repeat=1)] # no skips and attention
         # main convs
         # 3 blocks
-        dilated_blocks = [0]
+        dilated_blocks = config.dilated_blocks
         dilation_level = 2
         dilated_subblocks = [1,2]
 
