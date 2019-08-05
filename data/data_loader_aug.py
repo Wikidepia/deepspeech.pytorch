@@ -464,6 +464,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                     r['cer'] = float(r['cer'])
                     r['wer'] = float(r['wer'])
                     r['times_used'] = int(r['times_used'])
+                    r['duration'] = float(r['duration'])
                 self.curriculum = {row['wav']: row for row in rows}
                 print('Curriculum loaded from file {}'.format(curriculum_filepath))
                 # make sure that curriculum contains
@@ -549,7 +550,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         temp_file = 'current_curriculum_state.txt'
         with open(fn, 'w') as f:
             writer = csv.DictWriter(f, ['wav', 'text', 'transcript', 'offsets',
-                                        'times_used', 'cer', 'wer'])
+                                        'times_used', 'cer', 'wer',
+                                        'duration'])
             writer.writeheader()
             for cl in self.curriculum.values():
                 writer.writerow(cl)
