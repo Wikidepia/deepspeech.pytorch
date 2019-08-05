@@ -16,6 +16,7 @@ from model import DeepSpeech, supported_rnns
 from data.utils import reduce_tensor, get_cer_wer
 from data.data_loader_aug import (SpectrogramDataset,
                                   BucketingSampler,
+                                  BucketingLenSampler,
                                   DistributedBucketingSampler)
 
 tq = tqdm.tqdm
@@ -44,6 +45,9 @@ parser.add_argument('--labels-path', default='labels.json', help='Contains all c
 parser.add_argument('--phonemes-path', default='phonemes_ru.json', help='Contains all phonemes for the Russian language')
 parser.add_argument('--use-bpe', dest='use_bpe', action='store_true', help='Use random tempo and gain perturbations.')
 parser.add_argument('--use-phonemes',  action='store_true', default=False)
+
+parser.add_argument('--batch-similar-lens', dest='batch_similar_lens', action='store_true',
+                    help='Force usage of sampler that batches items with similar duration together')
 
 parser.add_argument('--window-size', default=.02, type=float, help='Window size for spectrogram in seconds')
 parser.add_argument('--window-stride', default=.01, type=float, help='Window stride for spectrogram in seconds')
@@ -726,7 +730,10 @@ def init_train_set(epoch, from_iter):
                                        sample_size=args.curriculum_ratio)
     global train_loader, train_sampler
     if not args.distributed:
-        train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)
+        if args.batch_similar_lens:
+            train_sampler = BucketingLenSampler(train_dataset, batch_size=args.batch_size)
+        else:
+            train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)
         train_sampler.bins = train_sampler.bins[from_iter:]
     else:
         train_sampler = DistributedBucketingSampler(train_dataset,

@@ -483,7 +483,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                                      'text': '',
                                      'transcript': '',
                                      'offsets': None,
-                                     'times_used':0,
+                                     'times_used': 0,
+                                     'duration': dur,
                                      'cer': 0.999,
                                      'wer': 0.999} for wav, txt, dur in tq(ids, desc='Loading')}
         super(SpectrogramDataset, self).__init__(audio_conf, cache_path, normalize, augment)
@@ -536,7 +537,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             'text': reference,
             'transcript': transcript,
             'offsets': offsets,
-            'times_used':times_used,
+            'times_used': times_used,
+            'duration': self.curriculum[audio_path]['duration'],
             'cer': cer,
             'wer': wer
         }
@@ -694,6 +696,37 @@ class BucketingSampler(Sampler):
 
     def shuffle(self, epoch):
         np.random.shuffle(self.bins)
+
+
+class BucketingLenSampler(Sampler):
+    def __init__(self, data_source, batch_size=1):
+        """
+        A sampler to use with curriculum learning
+        Due to drastically different durations of the samples
+        It is better to sample items of similar duration together
+        Curriculum breaks the default behavior where all samples are sorted by ascending duration  
+        """
+        super(BucketingLenSampler, self).__init__(data_source)
+        self.data_source = data_source
+        ids = list(range(0, len(data_source)))
+        # data_source.ids - ids sampled by curriculum
+        durations = [item[2] for item in data_source.ids]
+        assert len(durations) == len(ids)
+        # sort ids by ascending duration
+        ids = [_id for _, _id in sorted(zip(durations, ids),
+               key=lambda pair: pair[0])]
+        self.bins = [ids[i:i + batch_size] for i in range(0, len(ids), batch_size)]
+
+    def __iter__(self):
+        for ids in self.bins:
+            np.random.shuffle(ids)
+            yield ids
+
+    def __len__(self):
+        return len(self.bins)
+
+    def shuffle(self, epoch):
+        np.random.shuffle(self.bins)    
 
 
 class DistributedBucketingSampler(Sampler):
