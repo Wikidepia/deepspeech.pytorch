@@ -359,7 +359,34 @@ class DeepSpeech(nn.Module):
                 self.fc_phoneme = nn.Sequential(
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
-                )                              
+                )
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8':  # repeat middle convs
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable': True,
+                    'add_downsample': 4,
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+            # make checkpoints reverse compatible
+            if hasattr(self, '_phoneme_count'):
+                self.fc_phoneme = nn.Sequential(
+                    nn.Conv1d(in_channels=size,
+                              out_channels=self._phoneme_count, kernel_size=1)
+                )                                        
         elif self._rnn_type == 'tds':  # repeat middle convs
             # TDS config
             size = rnn_hidden_size
@@ -846,7 +873,8 @@ class ResidualRepeatWav2Letter(nn.Module):
                 # add one more stride after one block
                 downsampled_blocks.append(1)
             elif config.add_downsample == 4:
-                # add one more stride after one more block                
+                # add one more stride after one more block
+                downsampled_blocks.append(1)          
                 downsampled_blocks.append(2)
 
         separable = config.separable if 'separable' in config else False
