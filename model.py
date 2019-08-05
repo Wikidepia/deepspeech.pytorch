@@ -30,7 +30,8 @@ supported_rnns = {
     'cnn_residual_repeat': None,
     'tds':None,
     'cnn_residual_repeat_sep': None,
-    'cnn_residual_repeat_sep_bpe':None
+    'cnn_residual_repeat_sep_bpe':None,
+    'cnn_residual_repeat_sep_down8':None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -547,7 +548,7 @@ class DeepSpeech(nn.Module):
         if self._rnn_type in ['cnn', 'glu_small', 'glu_large', 'large_cnn',
                               'cnn_residual', 'cnn_jasper', 'cnn_jasper_2',
                               'cnn_residual_repeat', 'tds','cnn_residual_repeat_sep',
-                              'cnn_residual_repeat_sep_bpe']:
+                              'cnn_residual_repeat_sep_bpe', 'cnn_residual_repeat_sep_down8']:
             x = x.squeeze(1)
             x = self.rnns(x)
             if hasattr(self, '_phoneme_count'):
@@ -599,7 +600,8 @@ class DeepSpeech(nn.Module):
         :return: 1D Tensor scaled by model
         """
         seq_len = input_length
-        if self._rnn_type in ['cnn_residual_repeat_sep_bpe']:
+        if self._rnn_type in ['cnn_residual_repeat_sep_bpe',
+                              'cnn_residual_repeat_sep_down8']:
             for m in self.rnns.modules():
                 if type(m) == nn.modules.conv.Conv1d:
                     seq_len = ((seq_len + 2 * m.padding[0] - m.dilation[0] * (m.kernel_size[0] - 1) - 1) / m.stride[0] + 1)
