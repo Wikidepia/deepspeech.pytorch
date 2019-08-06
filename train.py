@@ -731,6 +731,7 @@ def init_train_set(epoch, from_iter):
     global train_loader, train_sampler
     if not args.distributed:
         if args.batch_similar_lens:
+            print('Using BucketingLenSampler')
             train_sampler = BucketingLenSampler(train_dataset, batch_size=args.batch_size)
         else:
             train_sampler = BucketingSampler(train_dataset, batch_size=args.batch_size)

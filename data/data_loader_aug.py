@@ -181,7 +181,7 @@ class SpectrogramParser(AudioParser):
         else:
             tempo_id = 0
 
-        if False: #if USE_CACHE:
+        if False: # if USE_CACHE:
             cache_fn, spect = self.load_audio_cache(audio_path, tempo_id)
         else:
             cache_fn, spect = None, None
@@ -460,11 +460,12 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             with open(curriculum_filepath, newline='') as f:
                 reader = csv.DictReader(f)
                 rows = [row for row in reader]
+                duration_dict = {wav:dur for wav, txt, dur in ids}
                 for r in rows:
                     r['cer'] = float(r['cer'])
                     r['wer'] = float(r['wer'])
                     r['times_used'] = int(r['times_used'])
-                    r['duration'] = float(r['duration'])
+                    r['duration'] = float(r['duration']) if 'duration' in r else duration_dict[r['wav']]
                 self.curriculum = {row['wav']: row for row in rows}
                 print('Curriculum loaded from file {}'.format(curriculum_filepath))
                 # make sure that curriculum contains

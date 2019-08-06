@@ -568,23 +568,23 @@ class DeepSpeech(nn.Module):
             sizes = x.size()
             x = x.view(sizes[0], sizes[1] * sizes[2], sizes[3])  # Collapse feature dimension
             x = x.transpose(1, 2).transpose(0, 1).contiguous()  # TxNxH
-            assert x.is_cuda
+            # assert x.is_cuda
 
             for rnn in self.rnns:
                 x = rnn(x, output_lengths)
-                assert x.is_cuda
+                # assert x.is_cuda
 
             if not self._bidirectional:  # no need for lookahead layer in bidirectional
                 x = self.lookahead(x)
-                assert x.is_cuda
+                # assert x.is_cuda
 
             x = self.fc(x)
-        if not DEBUG: assert x.is_cuda
+        # if not DEBUG: assert x.is_cuda
         x = x.transpose(0, 1)
         # identity in training mode, softmax in eval mode
         outs = F.softmax(x, dim=-1)
-        if not DEBUG: assert outs.is_cuda
-        if not DEBUG: assert output_lengths.is_cuda
+        # if not DEBUG: assert outs.is_cuda
+        # if not DEBUG: assert output_lengths.is_cuda
 
         if hasattr(self, '_phoneme_count'):
             x_phoneme = x_phoneme.transpose(0, 1)
