@@ -11,7 +11,7 @@ class ChangeAudioSpeed:
         self.prob = prob
         self.max_duration = max_duration * sr
 
-        
+
     def __call__(self, wav=None,
                  sr=None):
         assert len(wav.shape)==1
@@ -21,8 +21,8 @@ class ChangeAudioSpeed:
             if _wav.shape[0]<self.max_duration:
                 wav = _wav
         return {'wav':wav,'sr':sr}
-    
-    
+
+
 class Shift:
     def __init__(self, limit=512, prob=0.5,
                  max_duration=10, sr=16000):
@@ -43,7 +43,7 @@ class Shift:
                 wav = _wav
         return {'wav':wav,'sr':sr}
 
-    
+
 class AudioDistort:
     def __init__(self, limit=0.3, prob=0.5):
         self.limit = limit
@@ -58,23 +58,23 @@ class AudioDistort:
             dtype = wav.dtype
             wav = clip(alpha * wav, dtype, maxval)
         return {'wav':wav,'sr':sr}
- 
+
 
 class PitchShift:
     def __init__(self, limit=5, prob=0.5):
         self.limit = abs(limit)
         self.prob = prob
 
-        
+
     def __call__(self, wav=None,
                  sr=22050):
         assert len(wav.shape)==1
         if random.random() < self.prob:
             alpha = self.limit * random.uniform(-1, 1)
             wav = librosa.effects.pitch_shift(wav, sr, n_steps=alpha)
-        return {'wav':wav,'sr':sr}   
+        return {'wav':wav,'sr':sr}
 
-    
+
 class AddNoise:
     def __init__(self, limit=0.2, prob=0.5,
                  noise_samples=[]):
@@ -82,7 +82,7 @@ class AddNoise:
         self.prob = prob
         self.noise_samples = noise_samples
 
-        
+
     def __call__(self, wav=None,
                  sr=None):
         assert len(wav.shape)==1
@@ -103,9 +103,51 @@ class AddNoise:
                 alpha = self.limit * random.uniform(0, 1)
                 pos = random.randint(0,_noise.shape[0]-wav.shape[0])
                 wav = (wav + alpha * _noise[pos:pos+wav.shape[0]])/(1+alpha)
-            
-        return {'wav':wav,'sr':sr}    
 
+        return {'wav':wav,'sr':sr}
+
+
+class AddEcho:
+    def __init__(self,
+                 max_echos=100,
+                 sound_speed=0.33,
+                 echo_arrivals_ms=list(range(0, 200, 10)),
+                 prob=0.5):
+        self.prob = prob
+        self.max_echos = max_echos
+        self.sound_speed = sound_speed
+        self.echo_arrivals_ms = echo_arrivals_ms
+
+    @staticmethod
+    def dampen(ms):
+        if ms < 50:
+            return 0.2
+        if ms < 100:
+            return 0.1
+        return 0.05
+
+    def __call__(self, wav=None,
+                 sr=None):
+        assert len(wav.shape) == 1
+        # apply noise 2 times with some probability
+        # audio and noise are both normalized
+        _wav = None
+        if random.random() < self.prob:
+            for i in range(0, self.max_echos):
+                if random.random() < self.prob:
+                    # noise is audio itself shifted
+                    echo_arrival = random.choice(self.echo_arrivals_ms)
+                    shift_frames = int(sr * echo_arrival * self.sound_speed / 1000) + 1
+                    if shift_frames < (wav.shape[0] - 1):
+                        noise = np.zeros_like(wav)
+                        noise[shift_frames:] = wav[:-shift_frames]
+                        # vary dampening a bit
+                        alpha = self.dampen(echo_arrival) * random.uniform(0.5, 1)
+                        _wav = (wav + alpha * noise) / (1+alpha)
+        if _wav is not None:
+            return {'wav': _wav, 'sr': sr}
+        else:
+            return {'wav': wav, 'sr': sr}
 
 def get_stacked_noise(noise_paths=None,
                       wav=None,
@@ -173,7 +215,7 @@ class OneOrOther(object):
 
     def __call__(self, **data):
         return self.first(**data) if np.random.random() < self.p else self.second(**data)
-  
+
 
 def clip(img, dtype, maxval):
-    return np.clip(img, 0, maxval).astype(dtype)    
+    return np.clip(img, 0, maxval).astype(dtype)
