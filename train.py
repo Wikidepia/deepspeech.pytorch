@@ -43,7 +43,9 @@ parser.add_argument('--num-workers', default=4, type=int, help='Number of worker
 
 parser.add_argument('--labels-path', default='labels.json', help='Contains all characters for transcription')
 parser.add_argument('--phonemes-path', default='phonemes_ru.json', help='Contains all phonemes for the Russian language')
-parser.add_argument('--use-bpe', dest='use_bpe', action='store_true', help='Use random tempo and gain perturbations.')
+parser.add_argument('--use-bpe', dest='use_bpe', action='store_true', help='Use sentencepiece BPE tokens')
+parser.add_argument('--sp-model', dest='sp_model', default='data/spm_train_v05_cleaned_asr_10s_phoneme.model',
+                    type=str, help='Pre-trained sentencepiece model')
 parser.add_argument('--use-phonemes',  action='store_true', default=False)
 
 parser.add_argument('--batch-similar-lens', dest='batch_similar_lens', action='store_true',
@@ -990,7 +992,8 @@ if __name__ == '__main__':
     else:
         if args.use_bpe:
             from data.bpe_labels import Labels as BPELabels
-            labels = BPELabels(use_phonemes=False)
+            labels = BPELabels(sp_model=args.sp_model,
+                               use_phonemes=False)
             # list instead of string
             labels = labels.label_list
         else:

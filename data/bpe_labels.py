@@ -7,8 +7,8 @@ import sentencepiece as sp
 from string import punctuation, printable
 
 russian_alphabet = 'АаБбВвГгДдЕеЁёЖжЗзИиЙйКкЛлМмНнОоПпРрСсТтУуФфХхЦцЧчШшЩщЪъЫыЬьЭэЮюЯя'
-punctuation = punctuation.replace('-','')
-printable = printable.replace('\n','') + russian_alphabet
+punctuation = punctuation.replace('-', '')
+printable = printable.replace('\n', '') + russian_alphabet
 
 with open('phonemes_ru.json') as json_file:
     ru_phonemes = json.load(json_file)
@@ -16,11 +16,12 @@ with open('phonemes_ru.json') as json_file:
 # a hack to use BPE with phonemes
 # you cannot just apply sp because phonemes have 2-3 letter codes
 fake_alphabet = string.ascii_letters + russian_alphabet
-phoneme_2_fake = {phoneme : fake_alphabet[i]
+phoneme_2_fake = {phoneme: fake_alphabet[i]
                   for i, phoneme in enumerate(ru_phonemes)}
 fake_2_phoneme = {v: k for k, v in phoneme_2_fake.items()}
 
 logger.add("bpe_labels.log", enqueue=True)
+
 
 def remove_extra_spaces(text):
     return re.sub(' +', ' ', text)
@@ -38,6 +39,8 @@ class Labels:
         # if sp is trained with coverage of 1.0
         # and default params
         self.remove_sp_tokens = ['<unk>', '<s>', '</s>', '2']
+        # also reserve sp space token
+        # and replace it with ordinary space later
         self.sp_space_token = sp_space_token
 
         self.spm = sp.SentencePieceProcessor()
@@ -52,13 +55,13 @@ class Labels:
         pieces = pd.DataFrame([{'piece_id': i,
                                 'piece_str': self.spm .IdToPiece(id=i),
                                 'piece_score': self.spm .GetScore(id=i)}
-                               for i in range(0,sp_tokens)])
+                               for i in range(0, sp_tokens)])
         pieces = pieces[~pieces.piece_str.isin(self.remove_sp_tokens+[self.sp_space_token])]
 
         self.label_list = []
 
         # reserve 0 for CTC blank
-        self.labels_map = {"_" : 0}
+        self.labels_map = {"_": 0}
         self.label_list.append("_")
 
         for key in list(pieces.piece_str.values):
@@ -142,7 +145,7 @@ class Labels:
                         code = self.labels_map['2']  # double char
                 transcript.append(code)
             except Exception as e:
-                msg = 'Error {} with text {}, transcript {}'.format(str(e),text,sp_transcript)
+                msg = 'Error {} with text {}, transcript {}'.format(str(e), text,sp_transcript)
                 logger.error(msg, enqueue=True)
 
         # print(transcript)
