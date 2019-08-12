@@ -41,6 +41,7 @@ class Decoder(object):
             space_index = labels.index(' ')
         self.space_index = space_index
 
+
     def wer(self, s1, s2):
         """
         Computes the Word Error Rate, defined as the edit distance between the

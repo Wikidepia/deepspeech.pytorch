@@ -367,7 +367,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.use_bpe = audio_conf.get('use_bpe', False)
         if self.use_bpe:
             from data.bpe_labels import Labels as BPELabels
-            self.labels = BPELabels(use_phonemes=False)
+            self.labels = BPELabels(sp_model=audio_conf.get('sp_model', ''),  # will raise error if model is invalid
+                                    use_phonemes=False)
         else:
             self.labels = Labels(labels)
 

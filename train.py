@@ -1010,8 +1010,8 @@ if __name__ == '__main__':
                           noise_levels=(args.noise_min, args.noise_max),
                           aug_prob_8khz=args.aug_prob_8khz,
                           aug_prob_spect=args.aug_prob_spect,
-                          use_bpe=args.use_bpe
-                          )
+                          use_bpe=args.use_bpe,
+                          sp_model=args.sp_model)
 
         if args.use_phonemes:
             audio_conf['phoneme_count'] = len(phoneme_map)
@@ -1028,8 +1028,7 @@ if __name__ == '__main__':
                            bidirectional=args.bidirectional,
                            bnm=args.batch_norm_momentum,
                            dropout=args.dropout,
-                           phoneme_count=len(phoneme_map) if args.use_phonemes else 0
-                          )
+                           phoneme_count=len(phoneme_map) if args.use_phonemes else 0)
         parameters = model.parameters()
         optimizer = build_optimizer(args, parameters)
 

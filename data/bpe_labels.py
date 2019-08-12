@@ -145,10 +145,10 @@ class Labels:
                         code = self.labels_map['2']  # double char
                 transcript.append(code)
             except Exception as e:
-                msg = 'Error {} with text {}, transcript {}'.format(str(e), text,sp_transcript)
+                msg = 'Error {} with text {}, transcript {}'.format(str(e), text, sp_transcript)
                 logger.error(msg, enqueue=True)
 
-        # print(transcript)
+        # print(transcript, self.render_transcript(transcript))
         return transcript
 
     def render_transcript(self, codes):
