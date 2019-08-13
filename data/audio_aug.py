@@ -1,24 +1,36 @@
 import random
 import librosa
 import numpy as np
+import pyrubberband as pyrb
 from data.audio_loader import load_audio_norm
 
+"""
+Librosa pitch and speed augs are low quality
+TorchAudio has a proper SoxEffect wrapper, but it will not be supported
+Also it only reads files on disk
+Initially using sox for all files via subprocess caused problems
+For the time being the most optimal strategy is just to try using pyrb
+"""
 
 class ChangeAudioSpeed:
-    def __init__(self, limit=0.15, prob=0.5,
-                 max_duration=10, sr=16000):
+    def __init__(self, limit=0.3, prob=0.5,
+                 max_duration=10, sr=16000,
+                 use_pyrb=False):
         self.limit = limit
         self.prob = prob
         self.max_duration = max_duration * sr
-
+        self.use_pyrb = use_pyrb
 
     def __call__(self, wav=None,
                  sr=None):
         assert len(wav.shape)==1
         if random.random() < self.prob:
             alpha = 1.0 + self.limit * random.uniform(-1, 1)
-            _wav = librosa.effects.time_stretch(wav, alpha)
-            if _wav.shape[0]<self.max_duration:
+            if self.use_pyrb:
+                _wav = pyrb.time_stretch(wav, sr, alpha)
+            else:
+                _wav = librosa.effects.time_stretch(wav, alpha)
+            if _wav.shape[0] < self.max_duration:
                 wav = _wav
         return {'wav':wav,'sr':sr}
 
@@ -61,9 +73,11 @@ class AudioDistort:
 
 
 class PitchShift:
-    def __init__(self, limit=5, prob=0.5):
+    def __init__(self, limit=5, prob=0.5,
+                 use_pyrb=False):
         self.limit = abs(limit)
         self.prob = prob
+        self.use_pyrb = use_pyrb
 
 
     def __call__(self, wav=None,
@@ -71,7 +85,10 @@ class PitchShift:
         assert len(wav.shape)==1
         if random.random() < self.prob:
             alpha = self.limit * random.uniform(-1, 1)
-            wav = librosa.effects.pitch_shift(wav, sr, n_steps=alpha)
+            if self.use_pyrb:
+                wav = pyrb.pitch_shift(wav, sr, alpha)
+            else:
+                wav = librosa.effects.pitch_shift(wav, sr, n_steps=alpha)
         return {'wav':wav,'sr':sr}
 
 
@@ -111,7 +128,7 @@ class AddEcho:
     def __init__(self,
                  max_echos=100,
                  sound_speed=0.33,
-                 echo_arrivals_ms=list(range(0, 200, 10)),
+                 echo_arrivals_ms=list(range(0, 400, 10)),
                  prob=0.5):
         self.prob = prob
         self.max_echos = max_echos
@@ -121,10 +138,10 @@ class AddEcho:
     @staticmethod
     def dampen(ms):
         if ms < 50:
-            return 0.2
+            return 0.8
         if ms < 100:
-            return 0.1
-        return 0.05
+            return 0.5
+        return 0.3
 
     def __call__(self, wav=None,
                  sr=None):
@@ -148,6 +165,7 @@ class AddEcho:
             return {'wav': _wav, 'sr': sr}
         else:
             return {'wav': wav, 'sr': sr}
+
 
 def get_stacked_noise(noise_paths=None,
                       wav=None,
