@@ -101,8 +101,9 @@ class TorchAudioSoxChain:
     Also requires a file, but looks like it does not spawn processes
     """
     def __init__(self, speed_limit=0.3, prob=0.5,
-                    max_duration=10, sr=16000):
+                 pitch_limit=4, max_duration=10, sr=16000):
         self.speed_limit = speed_limit
+        self.pitch_limit = pitch_limit
         self.prob = prob
         self.max_duration = max_duration * sr
 
@@ -111,16 +112,21 @@ class TorchAudioSoxChain:
         _wav = None
         if random.random() < self.prob:
             speed_alpha = 1.0 + self.speed_limit * random.uniform(-1, 1)
+            pitch_alpha = self.pitch_limit * random.uniform(-1, 1) * 100 # in cents
             #  https://github.com/carlthome/python-audio-effects/blob/master/pysndfx/dsp.py#L531
             with NamedTemporaryFile(suffix=".wav") as temp_file:
                 temp_filename = temp_file.name
                 wav_write(temp_filename,
-                            sr,
-                            wav)
+                          sr,
+                          wav)
+                torchaudio.initialize_sox()
                 effects = torchaudio.sox_effects.SoxEffectsChain()
-                effects.append_effect_to_chain("tempo", [speed_alpha])
+                effects.append_effect_to_chain('pitch', pitch_alpha)
+                effects.append_effect_to_chain('tempo', [speed_alpha])
+                effects.append_effect_to_chain('rate', sr)
                 effects.set_input_file(temp_filename)
                 _wav, _sr = effects.sox_build_flow_effects()
+                torchaudio.shutdown_sox()
                 _wav = _wav.numpy()
                 assert sr == _sr
         if _wav is not None:
