@@ -1,8 +1,12 @@
 import random
 import librosa
+import torchaudio # used just as a proper wrapper around sox
 import numpy as np
 import pyrubberband as pyrb
+from tempfile import NamedTemporaryFile
 from data.audio_loader import load_audio_norm
+from scipy.io.wavfile import write as wav_write
+
 
 """
 Librosa pitch and speed augs are low quality
@@ -90,6 +94,39 @@ class PitchShift:
             else:
                 wav = librosa.effects.pitch_shift(wav, sr, n_steps=alpha)
         return {'wav':wav,'sr':sr}
+
+
+class TorchAudioSoxChain:
+    """Using a torchaudio proper C++ wrapper around soxi
+    Also requires a file, but looks like it does not spawn processes
+    """
+    def __init__(self, speed_limit=0.3, prob=0.5,
+                    max_duration=10, sr=16000):
+        self.speed_limit = speed_limit
+        self.prob = prob
+        self.max_duration = max_duration * sr
+
+    def __call__(self, wav=None, sr=None):
+        assert len(wav.shape)==1
+        _wav = None
+        if random.random() < self.prob:
+            speed_alpha = 1.0 + self.speed_limit * random.uniform(-1, 1)
+            #  https://github.com/carlthome/python-audio-effects/blob/master/pysndfx/dsp.py#L531
+            with NamedTemporaryFile(suffix=".wav") as temp_file:
+                temp_filename = temp_file.name
+                wav_write(temp_filename,
+                            sr,
+                            wav)
+                effects = torchaudio.sox_effects.SoxEffectsChain()
+                effects.append_effect_to_chain("tempo", [speed_alpha])
+                effects.set_input_file(temp_filename)
+                _wav, _sr = effects.sox_build_flow_effects()
+                _wav = _wav.numpy()
+                assert sr == _sr
+        if _wav is not None:
+            return {'wav': _wav,'sr': sr}
+        else:
+            return {'wav': wav,'sr': sr}
 
 
 class AddNoise:
