@@ -1,12 +1,19 @@
 import random
 import librosa
-import torchaudio # used just as a proper wrapper around sox
+import torchaudio  # used just as a proper wrapper around sox
 import numpy as np
+import subprocess
 import pyrubberband as pyrb
 from tempfile import NamedTemporaryFile
 from data.audio_loader import load_audio_norm
+from scipy.io.wavfile import read as wav_read
 from scipy.io.wavfile import write as wav_write
 
+use_shm = True
+if use_shm:
+    tempfile_dir = '/dev/shm'
+else:
+    tempfile_dir = None
 
 """
 Librosa pitch and speed augs are low quality
@@ -114,7 +121,8 @@ class TorchAudioSoxChain:
             speed_alpha = 1.0 + self.speed_limit * random.uniform(-1, 1)
             pitch_alpha = self.pitch_limit * random.uniform(-1, 1) * 100 # in cents
             #  https://github.com/carlthome/python-audio-effects/blob/master/pysndfx/dsp.py#L531
-            with NamedTemporaryFile(suffix=".wav") as temp_file:
+            with NamedTemporaryFile(suffix=".wav",
+                                    dir=tempfile_dir) as temp_file:
                 temp_filename = temp_file.name
                 wav_write(temp_filename,
                           sr,
@@ -135,6 +143,81 @@ class TorchAudioSoxChain:
             return {'wav': wav,'sr': sr}
 
 
+class SoxPhoneCodec:
+    """Using a torchaudio proper C++ wrapper around soxi
+    Also requires a file, but looks like it does not spawn processes
+    """
+    def __init__(self, prob=0.5,
+                 sox_codec_list=['gsm', 'amr-nb', 'ogg'],
+                 sox_sr_list=[8, 16],
+                 quality_presets=list(range(1,8))):
+        self.prob = prob
+        self.sox_codec_list = sox_codec_list
+        self.sox_sr_list = sox_sr_list
+        self.quality_presets = quality_presets
+
+    def __call__(self, wav=None, sr=None):
+
+        assert len(wav.shape) == 1
+        _wav = None
+
+        if random.random() < self.prob:
+            codec = random.choice(self.sox_codec_list)
+            quality = random.choice(self.quality_presets)
+            sox_sr = random.choice(self.sox_sr_list)
+
+            with NamedTemporaryFile(suffix="."+codec,
+                                    dir=tempfile_dir) as codec_temp_file:
+                with NamedTemporaryFile(suffix=".wav",
+                                        dir=tempfile_dir) as wav_temp_file:
+
+                    # save wav to disk
+                    # transform using a codec
+                    # convert back to wav and read
+
+                    # sox WARN formats: amr-nb can't encode at 16000Hz; using 8000Hz
+                    # therefore - just select 8k and 16k randomly
+                    # other codecs support 8k and 16k
+                    # print(codec, quality, sox_sr)
+
+                    codec_temp_filename = codec_temp_file.name
+                    wav_temp_filename = wav_temp_file.name
+                    wav_write(wav_temp_filename, sr, wav)
+
+                    sox_params = 'sox {} -r {}k -c 1 -C {} -t {} {}'.format(
+                        wav_temp_filename,
+                        sox_sr,
+                        quality,
+                        codec,
+                        codec_temp_filename
+                    )
+                    sox_reverse_params = 'sox {} -r {}k -c 1 -e signed-integer -t {} {}'.format(
+                        codec_temp_filename,
+                        str(int(sr//1000)),
+                        'wav',
+                        wav_temp_filename
+                    )
+
+                    # print(sox_params)
+                    # print(sox_reverse_params)
+
+                    _ = subprocess.Popen(sox_params,
+                                         shell=True,
+                                         stdout=subprocess.PIPE).stdout.read()
+
+                    _ = subprocess.Popen(sox_reverse_params,
+                                         shell=True,
+                                         stdout=subprocess.PIPE).stdout.read()
+
+                    _sr, _wav = wav_read(wav_temp_file)
+                    assert _sr == sr
+
+        if _wav is not None:
+            return {'wav': _wav, 'sr': sr}
+        else:
+            return {'wav': wav, 'sr': sr}
+
+
 class AddNoise:
     def __init__(self, limit=0.2, prob=0.5,
                  noise_samples=[]):
@@ -145,26 +228,26 @@ class AddNoise:
 
     def __call__(self, wav=None,
                  sr=None):
-        assert len(wav.shape)==1
+        assert len(wav.shape) == 1
         # apply noise 2 times with some probability
         # audio and noise are both normalized
-        for i in range(0,2):
+        for i in range(0, 2):
             if random.random() < self.prob:
-                if i==0:
+                if i == 0:
                     _noise = get_stacked_noise(self.noise_samples,
                                                wav=wav,
                                                sr=sr)
                     # noise still should be longer than audio
-                    if _noise.shape[0]<wav.shape[0]:
-                        return {'wav':wav,'sr':sr}
+                    if _noise.shape[0] < wav.shape[0]:
+                        return {'wav': wav, 'sr':sr}
                 else:
                     gaussian_noise = np.random.normal(0, 1, wav.shape[0]*2)
                     _noise = gaussian_noise
                 alpha = self.limit * random.uniform(0, 1)
-                pos = random.randint(0,_noise.shape[0]-wav.shape[0])
+                pos = random.randint(0, _noise.shape[0]-wav.shape[0])
                 wav = (wav + alpha * _noise[pos:pos+wav.shape[0]])/(1+alpha)
 
-        return {'wav':wav,'sr':sr}
+        return {'wav':wav, 'sr':sr}
 
 
 class AddEcho:

@@ -35,7 +35,9 @@ from data.audio_aug import (ChangeAudioSpeed,
                             AddNoise,
                             Compose,
                             OneOf,
-                            OneOrOther)
+                            OneOrOther,
+                            SoxPhoneCodec,
+                            TorchAudioSoxChain)
 from data.spectrogram_aug import (SCompose,
                                   SOneOf,
                                   SComposePipelines,
@@ -198,7 +200,7 @@ class SpectrogramParser(AudioParser):
                                                                    transforms=self.augs)
                 else: # never use this for now
                     y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
-                                                                   channel=self.channel, tempo_range=TEMPOS[tempo_id][1])                    
+                                                                   channel=self.channel, tempo_range=TEMPOS[tempo_id][1])
 
             else: # never use this for now
                 # FIXME: We never call this
@@ -259,7 +261,7 @@ class SpectrogramParser(AudioParser):
             if random.random() < self.aug_prob_8khz:
                 # poor man's robustness to poor recording quality
                 # pretend as if audio is 8kHz
-                spect[81:] = 0 
+                spect[81:] = 0
         return spect[:161]
 
     def audio_to_stft_numpy(self, y, sample_rate):
@@ -283,7 +285,7 @@ class SpectrogramParser(AudioParser):
             spect[81:] = spect[80:0:-1]
         # print(spect.shape)
         # print(shape, spect.shape)
-        return spect[:161]    
+        return spect[:161]
 
     def normalize_audio(self, spect):
         # S = log(S+1)
@@ -379,21 +381,21 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.aug_prob_spect = audio_conf.get('aug_prob_spect')
         self.phoneme_count = audio_conf.get('phoneme_count',0) # backward compatible
         if self.phoneme_count>0:
-            self.phoneme_label_parser = PhonemeLabels(audio_conf.get('phoneme_map',None)) 
+            self.phoneme_label_parser = PhonemeLabels(audio_conf.get('phoneme_map',None))
 
         if self.aug_prob>0:
-            print('Using sound augs!')            
+            print('Using sound augs!')
             self.aug_samples = glob(audio_conf.get('noise_dir'))
             print('Found {} noise samples for augmentations'.format(len(self.aug_samples)))
             # plain vanilla aug pipeline
             # the probability of harder augs is lower
             # aug probs will be normalized inside of OneOf
-            if self.aug_type==0:
+            if self.aug_type == 0:
                 # all augs
                 aug_list = [
                     AddNoise(limit=0.2, # noise is scaled to 0.2 (0.05)
                              prob=self.aug_prob,
-                             noise_samples=self.aug_samples), 
+                             noise_samples=self.aug_samples),
                     ChangeAudioSpeed(limit=0.15,
                                      prob=self.aug_prob,
                                      sr=audio_conf.get('sample_rate'),
@@ -407,7 +409,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                     PitchShift(limit=2, #  half-steps
                                prob=self.aug_prob)  # /2
                 ]
-            elif self.aug_type==1:
+            elif self.aug_type == 1:
                 # only spatial shifts
                 aug_list = [
                     Shift(limit=audio_conf.sample_rate*2,
@@ -415,32 +417,51 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                           sr=audio_conf.sample_rate,
                           max_duration=MAX_DURATION_AUG), # shift 2 seconds max
                 ]
-            elif self.aug_type==2:
+            elif self.aug_type == 2:
                 # only effects affecting audio tone
                 aug_list = [
                     ChangeAudioSpeed(limit=0.15,
                                      prob=self.aug_prob,
                                      sr=audio_conf.get('sample_rate'),
-                                     max_duration=MAX_DURATION_AUG),                    
+                                     max_duration=MAX_DURATION_AUG),
                     PitchShift(limit=2,prob=self.aug_prob) #  half-steps
                 ]
-            elif aug_type==3:
+            elif self.aug_type == 3:
                 # adding noise
                 aug_list = [
                     AddNoise(limit=0.05, # noise is scaled to 0.05
                              prob=self.aug_prob,
-                             noise_samples=self.aug_samples), 
+                             noise_samples=self.aug_samples),
                     AudioDistort(limit=0.05, # max clipping 0.05
-                                 prob=self.aug_prob), 
-                ]                
-
+                                 prob=self.aug_prob),
+                ]
+            elif self.aug_type == 4:
+                # all augs
+                # proper speed / pitch augs via sox
+                # codec encoding / decoding
+                aug_list = [
+                    AddNoise(limit=0.2,
+                             prob=self.aug_prob,
+                             noise_samples=self.aug_samples),
+                    AudioDistort(limit=0.05,
+                                 prob=self.aug_prob),
+                    Shift(limit=audio_conf.get('sample_rate')*0.5,
+                          prob=self.aug_prob,
+                          sr=audio_conf.get('sample_rate'),
+                          max_duration=2),
+                    AddEcho(prob=self.aug_prob),                    
+                    # librosa augs are of low quality
+                    # so replaces PitchShift and ChangeAudioSpeed
+                    TorchAudioSoxChain(prob=self.aug_prob),
+                    SoxPhoneCodec(prob=self.aug_prob)
+                ]
             self.augs = OneOf(
                     aug_list, prob=self.aug_prob
             )
         else:
             self.augs = None
 
-        if self.aug_prob_spect>0:
+        if self.aug_prob_spect > 0:
             print('Using spectrogram augs!')
             aug_list = [
                 FrequencyMask(bands=2,
@@ -575,7 +596,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                     ts = self.labels.parse(transcript_file.read())
             TS_CACHE[transcript_path] = ts
         return TS_CACHE[transcript_path]
-    
+
     def parse_phoneme(self, phoneme_path):
         global TS_PHONEME_CACHE
         if phoneme_path not in TS_PHONEME_CACHE:
@@ -585,12 +606,12 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 with open(phoneme_path, 'r', encoding='utf8') as phoneme_file:
                     ts = self.phoneme_label_parser.parse(phoneme_file.read())
             TS_PHONEME_CACHE[phoneme_path] = ts
-        return TS_PHONEME_CACHE[phoneme_path]    
+        return TS_PHONEME_CACHE[phoneme_path]
 
     def get_phoneme_path(self,
                          transcript_path):
         return transcript_path.replace('.txt','_phoneme.txt')
-    
+
     def __len__(self):
         return self.size
 
@@ -670,7 +691,7 @@ class AudioDataLoader(DataLoader):
         super(AudioDataLoader, self).__init__(*args, **kwargs)
         self.collate_fn = _collate_fn
 
-        
+
 class AudioDataLoaderPhoneme(DataLoader):
     def __init__(self, *args, **kwargs):
         """
@@ -708,7 +729,7 @@ class BucketingLenSampler(Sampler):
         A sampler to use with curriculum learning
         Due to drastically different durations of the samples
         It is better to sample items of similar duration together
-        Curriculum breaks the default behavior where all samples are sorted by ascending duration  
+        Curriculum breaks the default behavior where all samples are sorted by ascending duration
         """
         super(BucketingLenSampler, self).__init__(data_source)
         self.data_source = data_source
@@ -730,7 +751,7 @@ class BucketingLenSampler(Sampler):
         return len(self.bins)
 
     def shuffle(self, epoch):
-        np.random.shuffle(self.bins)    
+        np.random.shuffle(self.bins)
 
 
 class DistributedBucketingSampler(Sampler):
@@ -809,8 +830,8 @@ def augment_audio_with_sox(path, sample_rate, tempo, gain, channel=-1):  # chann
         y, sample_rate_ = load_audio(augmented_filename)
         assert sample_rate == sample_rate_
         return y, sample_rate
-    
-    
+
+
 def augment_audio_with_augs(path,
                             sample_rate,
                             transforms,
@@ -821,13 +842,13 @@ def augment_audio_with_augs(path,
     if _sample_rate!=sample_rate:
         y = librosa.resample(y, _sample_rate, sample_rate)
     assert len(y.shape)==1
-    
-    # plug to omit augs 
+
+    # plug to omit augs
     if transforms is not None:
         _ = transforms(**{'wav':y,
                           'sr':sample_rate})
         y = _['wav']
-    return y, sample_rate    
+    return y, sample_rate
 
 
 def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.85, 1.15),
@@ -852,7 +873,7 @@ def load_randomly_augmented_audio(path, sample_rate=16000, tempo_range=(0.85, 1.
     assert sample_rate == sample_rate_
     return audio, sample_rate
 
-    
+
 def power_spec(audio: np.ndarray, window_stride=(160, 80), fft_size=512):
     """Calculates power spectrogram"""
     frames = chop_array(audio, *window_stride) or np.empty((0, window_stride[0]))
