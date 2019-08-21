@@ -66,7 +66,10 @@ parser.add_argument('--optimizer', default='sgd', help='Optimizer - sgd or adam'
 parser.add_argument('--weight-decay', default=0, help='Weight decay for SGD', type=float)
 parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--batch-norm-momentum', default=0.1, type=float, help='BatchNorm momentum')
+
 parser.add_argument('--max-norm', default=100, type=int, help='Norm cutoff to prevent explosion of gradients')
+parser.add_argument('--norm-warmup-epochs', default=1000, type=int, help='Do gradient clipping only before some epoch')
+
 parser.add_argument('--learning-anneal', default=1.1, type=float, help='Annealing applied to learning rate every epoch')
 parser.add_argument('--checkpoint-anneal', default=1.0, type=float,
                     help='Annealing applied to learning rate every checkpoint')
@@ -688,6 +691,7 @@ class Trainer:
             print("WARNING: received an inf loss, setting loss value to 1000")
             loss_value = 1000
 
+
         loss_value = float(loss_value)
         losses.update(loss_value, inputs.size(0))
 
@@ -697,8 +701,16 @@ class Trainer:
         optimizer.zero_grad()
         loss.backward()
         
-        if args.max_norm>0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
+        if args.max_norm > 0:        
+            if epoch < args.norm_warmup_epochs:
+                # warmup, always do clipping            
+                torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                                args.max_norm)            
+            else:
+                # clip only when gradients explode
+                if loss_value == inf or loss_value == -inf:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                                    args.max_norm)
 
         if torch.isnan(logits).any():
             # work around bad data
