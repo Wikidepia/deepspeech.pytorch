@@ -449,7 +449,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                           prob=self.aug_prob,
                           sr=audio_conf.get('sample_rate'),
                           max_duration=2),
-                    AddEcho(prob=self.aug_prob),                    
+                    AddEcho(prob=self.aug_prob),
                     # librosa augs are of low quality
                     # so replaces PitchShift and ChangeAudioSpeed
                     TorchAudioSoxChain(prob=self.aug_prob),
@@ -478,12 +478,18 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         else:
             self.augs_spect = None
 
+        cr_column_set = set(['wav', 'text', 'transcript', 'offsets',
+                             'times_used', 'cer', 'wer',
+                             'duration'])
+
         if curriculum_filepath:
             with open(curriculum_filepath, newline='') as f:
                 reader = csv.DictReader(f)
                 rows = [row for row in reader]
-                duration_dict = {wav:dur for wav, txt, dur in ids}
+                duration_dict = {wav: dur
+                                 for wav, txt, dur in ids}
                 for r in rows:
+                    assert set(r.keys()) == cr_column_set
                     r['cer'] = float(r['cer'])
                     r['wer'] = float(r['wer'])
                     r['times_used'] = int(r['times_used'])
@@ -578,10 +584,10 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             writer.writeheader()
             for cl in self.curriculum.values():
                 writer.writerow(cl)
-                if cl['times_used']>0:
-                    nonzero_time_used+=1
+                if cl['times_used'] > 0:
+                    nonzero_time_used += 1
                 else:
-                    zero_times_used+=1
+                    zero_times_used += 1
         with open(temp_file, "w") as f:
             f.write('Non used files {:,} / used files {:,}'.format(zero_times_used,
                                                                    nonzero_time_used)+"\n")
