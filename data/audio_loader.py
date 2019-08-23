@@ -26,3 +26,21 @@ def load_audio_norm(path, channel=-1):
         else:
             sound = sound[:, channel]  # multiple channels, average
     return sound, sample_rate
+
+
+def int2float(sound):
+    _sound = np.copy(sound)
+    abs_max = np.abs(_sound).max()
+    _sound = _sound.astype('float32')
+    if abs_max > 0:
+        _sound *= 1/abs_max
+    _sound = _sound.squeeze()
+    return _sound
+
+
+def float2int(sound):
+    _sound = np.copy(sound)
+    _sound *= 16384
+    _sound = _sound.astype('int16')
+    _sound = _sound.squeeze()
+    return _sound

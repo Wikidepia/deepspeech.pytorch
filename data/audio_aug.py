@@ -8,6 +8,8 @@ from tempfile import NamedTemporaryFile
 from data.audio_loader import load_audio_norm
 from scipy.io.wavfile import read as wav_read
 from scipy.io.wavfile import write as wav_write
+from data.audio_loader import (float2int,
+                               int2float)
 
 use_shm = True
 if use_shm:
@@ -117,6 +119,7 @@ class TorchAudioSoxChain:
     def __call__(self, wav=None, sr=None):
         assert len(wav.shape)==1
         _wav = None
+        input_dtype = wav.dtype
         if random.random() < self.prob:
             speed_alpha = 1.0 + self.speed_limit * random.uniform(-1, 1)
             pitch_alpha = self.pitch_limit * random.uniform(-1, 1) * 100 # in cents
@@ -124,9 +127,17 @@ class TorchAudioSoxChain:
             with NamedTemporaryFile(suffix=".wav",
                                     dir=tempfile_dir) as temp_file:
                 temp_filename = temp_file.name
-                wav_write(temp_filename,
-                          sr,
-                          wav)
+                # always feed int16 to sox
+                if wav.dtype == np.float32():
+                    wav_int = float2int(wav)
+                    wav_write(temp_filename,
+                              sr,
+                              wav_int)
+                else:
+                    wav_write(temp_filename,
+                              sr,
+                              wav)
+
                 torchaudio.initialize_sox()
                 effects = torchaudio.sox_effects.SoxEffectsChain()
                 effects.append_effect_to_chain('pitch', pitch_alpha)
@@ -135,8 +146,12 @@ class TorchAudioSoxChain:
                 effects.set_input_file(temp_filename)
                 _wav, _sr = effects.sox_build_flow_effects()
                 torchaudio.shutdown_sox()
-                _wav = _wav.numpy()
+                _wav = _wav.numpy().squeeze()
                 assert sr == _sr
+                # always float output
+                if _wav.dtype == np.int16():
+                    _wav = int2float(_wav)
+
         if _wav is not None:
             return {'wav': _wav,'sr': sr}
         else:
@@ -165,6 +180,9 @@ class SoxPhoneCodec:
             codec = random.choice(self.sox_codec_list)
             quality = random.choice(self.quality_presets)
             sox_sr = random.choice(self.sox_sr_list)
+            # supress warnings
+            if codec in ['amr-nb', 'gsm']:
+                sox_sr = 8
 
             with NamedTemporaryFile(suffix="."+codec,
                                     dir=tempfile_dir) as codec_temp_file:
@@ -175,14 +193,18 @@ class SoxPhoneCodec:
                     # transform using a codec
                     # convert back to wav and read
 
-                    # sox WARN formats: amr-nb can't encode at 16000Hz; using 8000Hz
-                    # therefore - just select 8k and 16k randomly
-                    # other codecs support 8k and 16k
-                    # print(codec, quality, sox_sr)
-
                     codec_temp_filename = codec_temp_file.name
                     wav_temp_filename = wav_temp_file.name
-                    wav_write(wav_temp_filename, sr, wav)
+
+                    if wav.dtype == np.float32():
+                        wav_int = float2int(wav)
+                        wav_write(wav_temp_filename,
+                                sr,
+                                wav_int)
+                    else:
+                        wav_write(wav_temp_filename,
+                                  sr,
+                                  wav)                        
 
                     sox_params = 'sox {} -r {}k -c 1 -C {} -t {} {}'.format(
                         wav_temp_filename,
@@ -211,6 +233,8 @@ class SoxPhoneCodec:
 
                     _sr, _wav = wav_read(wav_temp_file)
                     assert _sr == sr
+                    if _wav.dtype == np.int16():
+                        _wav = int2float(_wav)
 
         if _wav is not None:
             return {'wav': _wav, 'sr': sr}

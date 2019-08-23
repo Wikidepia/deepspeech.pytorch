@@ -36,6 +36,7 @@ from data.audio_aug import (ChangeAudioSpeed,
                             Compose,
                             OneOf,
                             OneOrOther,
+                            AddEcho,
                             SoxPhoneCodec,
                             TorchAudioSoxChain)
 from data.spectrogram_aug import (SCompose,
@@ -193,7 +194,7 @@ class SpectrogramParser(AudioParser):
 
         if spect is None:
             if self.augment or True: # always use the pipeline with augs
-                if self.aug_prob>-1: # always use the pipeline with augs
+                if self.aug_prob > -1: # always use the pipeline with augs
                     y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
                                                                    channel=self.channel,
                                                                    tempo_range=TEMPOS[tempo_id][1],
@@ -374,7 +375,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         else:
             self.labels = Labels(labels)
 
-        self.aug_type = 0
+        self.aug_type = audio_conf.get('aug_type', 0)
 
         self.aug_prob_8khz = audio_conf.get('aug_prob_8khz')
         self.aug_prob = audio_conf.get('noise_prob')
@@ -439,6 +440,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 # all augs
                 # proper speed / pitch augs via sox
                 # codec encoding / decoding
+                print('Using new augs')
                 aug_list = [
                     AddNoise(limit=0.2,
                              prob=self.aug_prob,
@@ -453,7 +455,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                     # librosa augs are of low quality
                     # so replaces PitchShift and ChangeAudioSpeed
                     TorchAudioSoxChain(prob=self.aug_prob),
-                    SoxPhoneCodec(prob=self.aug_prob)
+                    SoxPhoneCodec(prob=self.aug_prob/2)
                 ]
             self.augs = OneOf(
                     aug_list, prob=self.aug_prob

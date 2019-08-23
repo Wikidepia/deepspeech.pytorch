@@ -92,6 +92,7 @@ parser.add_argument('--augment', dest='augment', action='store_true', help='Use 
 parser.add_argument('--noise-dir', default=None,
                     help='Directory to inject noise into audio. If default, noise Inject not added')
 parser.add_argument('--noise-prob', default=0.4, type=float, help='Probability of noise being added per sample')
+parser.add_argument('--aug-type', default=0, type=int, help='Type of augs to use')
 parser.add_argument('--aug-prob-8khz', default=0, type=float, help='Probability of dropping half of stft frequencies, robustness to 8kHz audio')
 parser.add_argument('--aug-prob-spect', default=0, type=float, help='Probability of applying spectrogram based augmentations')
 parser.add_argument('--noise-min', default=0.0,
@@ -1023,7 +1024,8 @@ if __name__ == '__main__':
                           aug_prob_8khz=args.aug_prob_8khz,
                           aug_prob_spect=args.aug_prob_spect,
                           use_bpe=args.use_bpe,
-                          sp_model=args.sp_model)
+                          sp_model=args.sp_model,
+                          aug_type=args.aug_type)
 
         if args.use_phonemes:
             audio_conf['phoneme_count'] = len(phoneme_map)
