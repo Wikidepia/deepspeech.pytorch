@@ -31,7 +31,8 @@ supported_rnns = {
     'tds':None,
     'cnn_residual_repeat_sep': None,
     'cnn_residual_repeat_sep_bpe':None,
-    'cnn_residual_repeat_sep_down8':None
+    'cnn_residual_repeat_sep_down8':None,
+    'cnn_inv_bottleneck_repeat_sep_down8':None,
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -308,7 +309,7 @@ class DeepSpeech(nn.Module):
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
                 )
-        elif self._rnn_type == 'cnn_residual_repeat_sep':  # repeat middle convs
+        elif self._rnn_type == 'cnn_residual_repeat_sep':  # add sep convs
             size = rnn_hidden_size
             self.rnns = ResidualRepeatWav2Letter(
                 DotDict({
@@ -335,7 +336,7 @@ class DeepSpeech(nn.Module):
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
                 )
-        elif self._rnn_type == 'cnn_residual_repeat_sep_bpe':  # repeat middle convs
+        elif self._rnn_type == 'cnn_residual_repeat_sep_bpe':  # add scale 4
             size = rnn_hidden_size
             self.rnns = ResidualRepeatWav2Letter(
                 DotDict({
@@ -363,7 +364,7 @@ class DeepSpeech(nn.Module):
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
                 )
-        elif self._rnn_type == 'cnn_residual_repeat_sep_down8':  # repeat middle convs
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8':  # add scale 8
             size = rnn_hidden_size
             self.rnns = ResidualRepeatWav2Letter(
                 DotDict({
@@ -380,6 +381,35 @@ class DeepSpeech(nn.Module):
                     'separable': True,
                     'add_downsample': 4,
                     'dilated_blocks': [] # no dilation
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+            # make checkpoints reverse compatible
+            if hasattr(self, '_phoneme_count'):
+                self.fc_phoneme = nn.Sequential(
+                    nn.Conv1d(in_channels=size,
+                              out_channels=self._phoneme_count, kernel_size=1)
+                )  
+        elif self._rnn_type == 'cnn_inv_bottleneck_repeat_sep_down8':  # add inverted bottleneck
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable': True,
+                    'add_downsample': 4,
+                    'dilated_blocks': [],  # no dilation because of scale 8
+                    'inverted_bottleneck': True
                 })
             )
             self.fc = nn.Sequential(
@@ -551,7 +581,8 @@ class DeepSpeech(nn.Module):
         if self._rnn_type in ['cnn', 'glu_small', 'glu_large', 'large_cnn',
                               'cnn_residual', 'cnn_jasper', 'cnn_jasper_2',
                               'cnn_residual_repeat', 'tds','cnn_residual_repeat_sep',
-                              'cnn_residual_repeat_sep_bpe', 'cnn_residual_repeat_sep_down8']:
+                              'cnn_residual_repeat_sep_bpe', 'cnn_residual_repeat_sep_down8',
+                              'cnn_inv_bottleneck_repeat_sep_down8']:
             x = x.squeeze(1)
             x = self.rnns(x)
             if hasattr(self, '_phoneme_count'):
@@ -604,7 +635,8 @@ class DeepSpeech(nn.Module):
         """
         seq_len = input_length
         if self._rnn_type in ['cnn_residual_repeat_sep_bpe',
-                              'cnn_residual_repeat_sep_down8']:
+                              'cnn_residual_repeat_sep_down8',
+                              'cnn_inv_bottleneck_repeat_sep_down8']:
             for m in self.rnns.modules():
                 if type(m) == nn.modules.conv.Conv1d:
                     seq_len = ((seq_len + 2 * m.padding[0] - m.dilation[0] * (m.kernel_size[0] - 1) - 1) / m.stride[0] + 1)
@@ -866,6 +898,7 @@ class ResidualRepeatWav2Letter(nn.Module):
         padding = kernel_size // 2
         se_ratio = config.se_ratio
         skip = config.skip
+        inverted_bottleneck = config.inverted_bottleneck
 
         downsampled_blocks = []
         downsampled_subblocks = []
@@ -889,6 +922,10 @@ class ResidualRepeatWav2Letter(nn.Module):
         else:
             Block = ResCNNRepeatBlock
 
+        inverted_bottleneck = config.inverted_bottleneck if 'inverted_bottleneck' in config else False
+        if inverted_bottleneck:
+            print('Using inverted bottleneck')
+
         # "prolog"
         modules = [Block(_in=161, out=cnn_width, kernel_size=kernel_size,
                          padding=padding, stride=2, bnm=bnm, bias=not bnorm, dropout=dropout,
@@ -908,6 +945,13 @@ class ResidualRepeatWav2Letter(nn.Module):
                    repeat_mid,
                    repeat_end]
 
+        # add layer down-scaling
+        if inverted_bottleneck:
+            modules.extend([Block(_in=cnn_width, out=cnn_width//4, kernel_size=kernel_size,
+                                  padding=padding, stride=1, bnm=bnm, bias=not bnorm, dropout=dropout,
+                                  nonlinearity=nn.ReLU(inplace=True),
+                                  se_ratio=0, skip=False, repeat=1)]) # no skips and attention                        
+
         for j in range(0, 3):
             for _ in range(0, repeat_layers//3):
                 # 1221 dilation blocks
@@ -921,15 +965,23 @@ class ResidualRepeatWav2Letter(nn.Module):
                             padding=padding, dilation=dilation,
                             stride=stride, bnm=bnm, bias=not bnorm, dropout=dropout,
                             nonlinearity=nn.ReLU(inplace=True),
-                            se_ratio=0, skip=False, repeat=1)]
-                    )                    
+                            se_ratio=0, skip=False, repeat=1,
+                            inverted_bottleneck=inverted_bottleneck)]
+                    )
                 modules.extend(
                     [Block(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
                            padding=padding, dilation=dilation,
                            stride=1, bnm=bnm, bias=not bnorm, dropout=dropout,
                            nonlinearity=nn.ReLU(inplace=True),
-                           se_ratio=se_ratio, skip=skip, repeat=repeats[j])]
+                           se_ratio=se_ratio, skip=skip, repeat=repeats[j],
+                           inverted_bottleneck=inverted_bottleneck)]
                 )
+        # add layer up-scaling
+        if inverted_bottleneck:
+            modules.extend([Block(_in=cnn_width//4, out=cnn_width, kernel_size=kernel_size,
+                                  padding=padding, stride=1, bnm=bnm, bias=not bnorm, dropout=dropout,
+                                  nonlinearity=nn.ReLU(inplace=True),
+                                  se_ratio=0, skip=False, repeat=1)]) # no skips and attention                      
         # "epilog"
         modules.extend([Block(_in=cnn_width, out=size, kernel_size=31,
                               padding=15, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
@@ -1022,8 +1074,8 @@ class ResCNNBlock(nn.Module):
                  nonlinearity=nn.ReLU(inplace=True),
                  bias=True,
                  se_ratio=0,
-                 skip=False
-                 ):
+                 skip=False,
+                 inverted_bottleneck=False):
         super(ResCNNBlock, self).__init__()
 
         self.conv = nn.Conv1d(_in,
@@ -1076,7 +1128,8 @@ class ResCNNRepeatBlock(nn.Module):
                  bias=True,
                  se_ratio=0,
                  skip=False,
-                 repeat=1):
+                 repeat=1,
+                 inverted_bottleneck=False):
         super(ResCNNRepeatBlock, self).__init__()
 
         self.skip = skip
@@ -1142,55 +1195,66 @@ class SeparableRepeatBlock(nn.Module):
                  se_ratio=0,
                  skip=False,
                  repeat=1,
-                 mix_channels=True):
+                 mix_channels=True,
+                 inverted_bottleneck=False):
         super(SeparableRepeatBlock, self).__init__()
 
+        inverted_bottleneck_scale = 4
         groups = 12
         self.skip = skip
         has_se = (se_ratio is not None) and (0 < se_ratio <= 1)
         dropout = nn.Dropout(dropout)
-        if has_se:
-            # squeeze after each block
-            scse = SCSE(out,
-                        kernel_size=1, se_ratio=se_ratio)
+
+        last_out = out
+        if inverted_bottleneck:
+            _in = _in // inverted_bottleneck_scale
+            last_out = out // inverted_bottleneck_scale
 
         modules = []
         if dilation>1:
             padding = dilation*(kernel_size-1)//2
 
         # just stick all the modules together
-        for i in range(0,repeat):
-            if i==0:
-                modules.extend([nn.Conv1d(_in, out, kernel_size,
-                                          stride=stride,
-                                          padding=padding,
-                                          dilation=dilation,
-                                          groups=groups if (_in % groups) == 0 else 1,
-                                          bias=bias),
-                                nn.BatchNorm1d(out,
-                                               momentum=bnm),
-                                nonlinearity,
-                                dropout])
+        for i in range(0, repeat):
+            if repeat == 1:
+                in_ch = _in
+                out_ch = last_out                
             else:
-                modules.extend([nn.Conv1d(out, out, kernel_size,
-                                          stride=stride,
-                                          padding=padding,
-                                          dilation=dilation,
-                                          groups=groups if (out % groups) == 0 else 1,
-                                          bias=bias),
-                                nn.BatchNorm1d(out,
-                                               momentum=bnm),
-                                nonlinearity,
-                                dropout])
+                if i==0:
+                    # first conv
+                    in_ch = _in
+                    out_ch = out
+                elif i==(repeat - 1):
+                    # last conv
+                    in_ch = out
+                    out_ch = last_out                
+                else:
+                    # mid conv
+                    in_ch = out
+                    out_ch = out
+
+            modules.extend([nn.Conv1d(in_ch, out_ch, kernel_size,
+                                      stride=stride,
+                                      padding=padding,
+                                      dilation=dilation,
+                                      groups=groups if (_in % groups) == 0 else 1,
+                                      bias=bias),
+                            nn.BatchNorm1d(out_ch,
+                                           momentum=bnm),
+                            nonlinearity,
+                            dropout])
+
             if has_se:
                 # apply lightweight attention layer
-                modules.extend([scse])
+                modules.extend([SCSE(out_ch,
+                                    kernel_size=1,
+                                    se_ratio=se_ratio)])
             if mix_channels:
                 # mix the separated channels
-                modules.extend([Conv1dSamePadding(in_channels=out,
-                                                  out_channels=out,
+                modules.extend([Conv1dSamePadding(in_channels=out_ch,
+                                                  out_channels=out_ch,
                                                   kernel_size=1),
-                                nn.BatchNorm1d(out,
+                                nn.BatchNorm1d(out_ch,
                                                momentum=bnm),
                                 nonlinearity,
                                 dropout])

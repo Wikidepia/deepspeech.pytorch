@@ -240,6 +240,11 @@ class SpectrogramParser(AudioParser):
         hop_length = int(sample_rate * (self.window_stride + 1e-8))
         # print(n_fft, win_length, hop_length)
         # STFT
+
+        if not np.isfinite(y).all():
+            y = np.clip(y, -1, 1)
+            print('Audio buffer is not finite everywhere, clipping')
+        
         D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
                          win_length=win_length, window=self.window)
 
@@ -455,7 +460,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                     # librosa augs are of low quality
                     # so replaces PitchShift and ChangeAudioSpeed
                     TorchAudioSoxChain(prob=self.aug_prob),
-                    SoxPhoneCodec(prob=self.aug_prob/2)
+                    # SoxPhoneCodec(prob=self.aug_prob/2)
                 ]
             self.augs = OneOf(
                     aug_list, prob=self.aug_prob
