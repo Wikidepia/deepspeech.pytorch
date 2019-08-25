@@ -898,7 +898,6 @@ class ResidualRepeatWav2Letter(nn.Module):
         padding = kernel_size // 2
         se_ratio = config.se_ratio
         skip = config.skip
-        inverted_bottleneck = config.inverted_bottleneck
 
         downsampled_blocks = []
         downsampled_subblocks = []

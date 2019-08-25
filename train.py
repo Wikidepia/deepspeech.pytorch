@@ -788,7 +788,7 @@ def train(from_epoch, from_iter, from_checkpoint):
             total_loss += trainer.train_batch(epoch, i, data)
             num_losses += 1
 
-            if (i + 1) % 10 == 0:
+            if (i + 1) % 500 == 0:
                 # deal with GPU memory fragmentation
                 gc.collect()
                 torch.cuda.empty_cache()
