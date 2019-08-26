@@ -6,7 +6,6 @@ import tqdm
 import argparse
 import datetime
 
-from enorm.enorm import ENorm
 import torch.distributed as dist
 import torch.utils.data.distributed
 from warpctc_pytorch import CTCLoss
@@ -119,6 +118,10 @@ parser.add_argument('--gpu-rank', default=None,
 parser.add_argument('--data-parallel', dest='data_parallel', action='store_true',
                     help='Use data parallel')
 
+parser.add_argument('--use-lookahead', dest='use_lookahead', action='store_true',
+                    help='Use look ahead optimizer')
+
+
 torch.manual_seed(123456)
 torch.cuda.manual_seed_all(123456)
 
@@ -155,12 +158,17 @@ def build_optimizer(args_, parameters_):
     if args_.weight_decay>0:
         print('Using weight decay {} for SGD'.format(args_.weight_decay))
 
-    if args_.optimizer=='sgd':
+    if args_.optimizer == 'sgd':
         print('Using SGD')
         try:
-            return torch.optim.SGD(parameters_, lr=args_.lr,
-                                momentum=args_.momentum, nesterov=True,
-                                weight_decay=args_.weight_decay)
+            base_optimizer = torch.optim.SGD(parameters_, lr=args_.lr,
+                                             momentum=args_.momentum, nesterov=True,
+                                             weight_decay=args_.weight_decay)
+            if args_.use_lookahead:
+                print('Using SGD + Lookahead')                
+                from lookahead import Lookahead
+                return Lookahead(base_optimizer=base_optimizer, k=5, alpha=0.5)
+            return base_optimizer
         except:
             # wo nesterov
             return torch.optim.SGD(parameters_, lr=args_.lr,
@@ -168,9 +176,9 @@ def build_optimizer(args_, parameters_):
                         weight_decay=args_.weight_decay)
     elif args_.optimizer=='adam':
         print('Using ADAM')
-        return torch.optim.Adam(parameters_, lr=args_.lr)   
+        return torch.optim.Adam(parameters_, lr=args_.lr)
 
-    
+
 viz = None
 tensorboard_writer = None
 
@@ -380,7 +388,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 (logits, probs,
                  output_sizes,
                  phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
-            else:            
+            else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
             loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
@@ -412,7 +420,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                                                reference, transcript,
                                                None,
                                                cer / cer_ref, wer / wer_ref,
-                                               times_used=times_used)    
+                                               times_used=times_used)
                 val_wer_sum += wer
                 val_cer_sum += cer
                 num_words += wer_ref
@@ -527,14 +535,14 @@ def calculate_trainval_quality_metrics(checkpoint,
                 if x < 1:
                     print("CER: {:6.2f}% WER: {:6.2f}% Filename: {}".format(cer/cer_ref*100, wer/wer_ref*100, filenames[x]))
                     print('Reference:', reference, '\nTranscript:', transcript)
-                    
+
                 times_used = trainval_dataset.curriculum[filenames[x]]['times_used']+1
                 trainval_dataset.update_curriculum(filenames[x],
                                                    reference, transcript,
                                                    None,
                                                    cer / cer_ref, wer / wer_ref,
                                                    times_used=times_used)
-                
+
                 val_wer_sum += wer
                 val_cer_sum += cer
                 num_words += wer_ref
@@ -558,10 +566,10 @@ def calculate_trainval_quality_metrics(checkpoint,
         plots_handle.loss_results[checkpoint] = val_loss
         plots_handle.wer_results[checkpoint] = val_wer
         plots_handle.cer_results[checkpoint] = val_cer
-        plots_handle.epochs[checkpoint] = checkpoint + 1 
+        plots_handle.epochs[checkpoint] = checkpoint + 1
         plots_handle.plot_progress(checkpoint, val_loss, val_cer, val_wer)
 
-        
+
 def save_validation_curriculums(save_folder,
                                 checkpoint,
                                 epoch,
@@ -571,8 +579,8 @@ def save_validation_curriculums(save_folder,
     else:
         test_path = '%s/test_checkpoint_%04d_epoch_%02d.csv' % (save_folder, checkpoint + 1, epoch + 1)
     print("Saving test curriculum to {}".format(test_path))
-    test_dataset.save_curriculum(test_path) 
-    
+    test_dataset.save_curriculum(test_path)
+
     if args.train_val_manifest != '':
         if iteration>0:
             trainval_path = '%s/trainval_checkpoint_%04d_epoch_%02d_iter_%05d.csv' % (save_folder, checkpoint + 1, epoch + 1, iteration + 1)
@@ -581,7 +589,7 @@ def save_validation_curriculums(save_folder,
         print("Saving trainval curriculum to {}".format(trainval_path))
         trainval_dataset.save_curriculum(trainval_path)
 
-    
+
 class Trainer:
     def __init__(self):
         self.end = time.time()
@@ -655,10 +663,10 @@ class Trainer:
             self.train_cer += cer
             self.num_words += wer_ref
             self.num_chars += cer_ref
-        
+
         if args.use_phonemes:
             phoneme_logits = phoneme_logits.transpose(0, 1)  # TxNxH
-        
+
         logits = logits.transpose(0, 1)  # TxNxH
 
         if torch.isnan(logits).any():  # and args.nan == 'zero':
@@ -667,7 +675,7 @@ class Trainer:
             logits[torch.isnan(logits)] = 0
 
         if args.use_phonemes:
-            # output_sizes should be the same 
+            # output_sizes should be the same
             # for phoneme and non-phonemes
             loss = criterion(logits,
                              targets,
@@ -677,7 +685,7 @@ class Trainer:
                                                        output_sizes.cpu(),
                                                        phoneme_target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
-            loss = loss.to(device)            
+            loss = loss.to(device)
         else:
             loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -701,12 +709,12 @@ class Trainer:
         # compute gradient
         optimizer.zero_grad()
         loss.backward()
-        
-        if args.max_norm > 0:        
+
+        if args.max_norm > 0:
             if epoch < args.norm_warmup_epochs:
-                # warmup, always do clipping            
+                # warmup, always do clipping
                 torch.nn.utils.clip_grad_norm_(model.parameters(),
-                                                args.max_norm)            
+                                                args.max_norm)
             else:
                 # clip only when gradients explode
                 if loss_value == inf or loss_value == -inf:
@@ -719,7 +727,7 @@ class Trainer:
         else:
             # SGD step
             optimizer.step()
-            if args.enorm: 
+            if args.enorm:
                 enorm.step()
 
         # measure elapsed time
@@ -760,7 +768,7 @@ def init_train_set(epoch, from_iter):
                                    num_workers=args.num_workers,
                                    batch_sampler=train_sampler,
                                    pin_memory=True)
-    
+
     if (not args.no_shuffle and epoch != 0) or args.no_sorta_grad:
         print("Shuffling batches for the following epochs")
         train_sampler.shuffle(epoch)
@@ -808,14 +816,14 @@ def train(from_epoch, from_iter, from_checkpoint):
                                                     checkpoint_cer_results=checkpoint_plots.cer_results,
                                                     trainval_checkpoint_loss_results=trainval_checkpoint_plots.loss_results,
                                                     trainval_checkpoint_wer_results=trainval_checkpoint_plots.wer_results,
-                                                    trainval_checkpoint_cer_results=trainval_checkpoint_plots.cer_results,                                                        
+                                                    trainval_checkpoint_cer_results=trainval_checkpoint_plots.cer_results,
                                                     avg_loss=total_loss / num_losses), file_path)
                     train_dataset.save_curriculum(file_path + '.csv')
 
                     check_model_quality(epoch, checkpoint, total_loss / num_losses, trainer.get_cer(), trainer.get_wer())
-                    save_validation_curriculums(save_folder, checkpoint + 1, epoch + 1, i + 1)  
+                    save_validation_curriculums(save_folder, checkpoint + 1, epoch + 1, i + 1)
                     checkpoint += 1
-                    
+
                     model.train()
                     if args.checkpoint_anneal != 1:
                         print("Checkpoint:", checkpoint)
@@ -852,7 +860,7 @@ def train(from_epoch, from_iter, from_checkpoint):
                                             checkpoint_cer_results=checkpoint_plots.cer_results,
                                             trainval_checkpoint_loss_results=trainval_checkpoint_plots.loss_results,
                                             trainval_checkpoint_wer_results=trainval_checkpoint_plots.wer_results,
-                                            trainval_checkpoint_cer_results=trainval_checkpoint_plots.cer_results, 
+                                            trainval_checkpoint_cer_results=trainval_checkpoint_plots.cer_results,
                                             ), file_path)
             train_dataset.save_curriculum(file_path + '.csv')
             save_validation_curriculums(save_folder, checkpoint + 1, epoch + 1, 0)
@@ -875,7 +883,7 @@ def train(from_epoch, from_iter, from_checkpoint):
                                             checkpoint_cer_results=checkpoint_plots.cer_results,
                                             trainval_checkpoint_loss_results=trainval_checkpoint_plots.loss_results,
                                             trainval_checkpoint_wer_results=trainval_checkpoint_plots.wer_results,
-                                            trainval_checkpoint_cer_results=trainval_checkpoint_plots.cer_results,                                             
+                                            trainval_checkpoint_cer_results=trainval_checkpoint_plots.cer_results,
                                             ),
                        args.model_path)
             train_dataset.save_curriculum(args.model_path + '.csv')
@@ -884,13 +892,13 @@ def train(from_epoch, from_iter, from_checkpoint):
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    
+
     # упячка, я идиот, убейте меня кто-нибудь
     if args.use_phonemes:
         from data.data_loader_aug import AudioDataLoaderPhoneme as AudioDataLoader
     else:
         from data.data_loader_aug import AudioDataLoader
-    
+
     args.distributed = args.world_size > 1
     args.model_path = os.path.join(args.save_folder, 'best.model')
 
@@ -946,7 +954,7 @@ if __name__ == '__main__':
 
         if args.use_phonemes:
             audio_conf['phoneme_count'] = len(phoneme_map)
-            audio_conf['phoneme_map'] = phoneme_map                          
+            audio_conf['phoneme_map'] = phoneme_map
         """
 
         if args.use_phonemes and package.get('phoneme_count',0)==0:
@@ -964,13 +972,13 @@ if __name__ == '__main__':
         optimizer = build_optimizer(args, parameters)
         if not args.finetune:  # Don't want to restart training
             model = model.to(device)
-            # when adding phonemes, optimizer state is not full              
+            # when adding phonemes, optimizer state is not full
             try:
                 optimizer.load_state_dict(package['optim_dict'])
                 # set_lr(args.lr)
                 print('Current LR {}'.format(
                     optimizer.state_dict()['param_groups'][0]['lr']
-                ))                
+                ))
             except:
                 print('Just changing the LR in the optimizer')
                 set_lr(package['optim_dict']['param_groups'][0]['lr'])
@@ -1001,7 +1009,7 @@ if __name__ == '__main__':
                     trainval_checkpoint_plots.cer_results = package.get('trainval_checkpoint_cer_results', torch.Tensor(10000))
                     trainval_checkpoint_plots.wer_results = package.get('trainval_checkpoint_wer_results', torch.Tensor(10000))
                 if package.get('trainval_checkpoint_cer_results') is not None and start_checkpoint > 0:
-                    trainval_checkpoint_plots.plot_history(start_checkpoint)                
+                    trainval_checkpoint_plots.plot_history(start_checkpoint)
     else:
         if args.use_bpe:
             from data.bpe_labels import Labels as BPELabels
@@ -1072,13 +1080,13 @@ if __name__ == '__main__':
                                       labels=labels, normalize=args.norm, augment=False)
 
     # if file is specified
-    # separate train validation wo domain shift 
+    # separate train validation wo domain shift
     # also wo augs
     if args.train_val_manifest != '':
         trainval_dataset = SpectrogramDataset(audio_conf=test_audio_conf,
                                               cache_path=args.cache_dir,
                                               manifest_filepath=args.train_val_manifest,
-                                              labels=labels, normalize=args.norm, augment=False)    
+                                              labels=labels, normalize=args.norm, augment=False)
 
     if args.reverse_sort:
         # XXX: A hack to test max memory load.
@@ -1091,7 +1099,7 @@ if __name__ == '__main__':
     if args.train_val_manifest != '':
         trainval_loader = AudioDataLoader(trainval_dataset,
                                           batch_size=args.val_batch_size,
-                                          num_workers=args.num_workers)        
+                                          num_workers=args.num_workers)
 
 
     model = model.to(device)
