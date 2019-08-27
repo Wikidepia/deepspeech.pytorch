@@ -167,7 +167,9 @@ def build_optimizer(args_, parameters_):
             if args_.use_lookahead:
                 print('Using SGD + Lookahead')                
                 from lookahead import Lookahead
-                return Lookahead(base_optimizer=base_optimizer, k=5, alpha=0.5)
+                return Lookahead(base_optimizer=base_optimizer,
+                                 k=5,
+                                 alpha=0.5)
             return base_optimizer
         except:
             # wo nesterov
@@ -342,15 +344,22 @@ class LRPlotWindow:
 
 
 def get_lr():
+    if args.use_lookahead:
+        return optimizer.optimizer.state_dict()['param_groups'][0]['lr']
     optim_state = optimizer.state_dict()
     return optim_state['param_groups'][0]['lr']
 
 
 def set_lr(lr):
-    print('Learning rate annealed to: {lr:.6g}'.format(lr=lr))
-    optim_state = optimizer.state_dict()
-    optim_state['param_groups'][0]['lr'] = lr
-    optimizer.load_state_dict(optim_state)
+    print('Learning rate annealed to: {lr:.6g}'.format(lr=lr))    
+    if args.use_lookahead:
+        optim_state = optimizer.optimizer.state_dict()
+        optim_state['param_groups'][0]['lr'] = lr
+        optimizer.optimizer.load_state_dict(optim_state)        
+    else:
+        optim_state = optimizer.state_dict()
+        optim_state['param_groups'][0]['lr'] = lr
+        optimizer.load_state_dict(optim_state)
 
 
 def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
@@ -1051,6 +1060,8 @@ if __name__ == '__main__':
                            bnm=args.batch_norm_momentum,
                            dropout=args.dropout,
                            phoneme_count=len(phoneme_map) if args.use_phonemes else 0)
+        if args.use_lookahead:
+            model = model.to(device)
         parameters = model.parameters()
         optimizer = build_optimizer(args, parameters)
 
@@ -1101,8 +1112,8 @@ if __name__ == '__main__':
                                           batch_size=args.val_batch_size,
                                           num_workers=args.num_workers)
 
-
-    model = model.to(device)
+    if not args.use_lookahead:
+        model = model.to(device)
     if args.distributed:
         device_id = [int(args.gpu_rank)] if args.rank else None
         model = torch.nn.parallel.DistributedDataParallel(model,

@@ -1236,7 +1236,7 @@ class SeparableRepeatBlock(nn.Module):
                                       stride=stride,
                                       padding=padding,
                                       dilation=dilation,
-                                      groups=groups if (_in % groups) == 0 else 1,
+                                      groups=groups if (in_ch % groups + out_ch % groups) == 0 else 1,
                                       bias=bias),
                             nn.BatchNorm1d(out_ch,
                                            momentum=bnm),
