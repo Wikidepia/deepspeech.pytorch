@@ -10,6 +10,8 @@ import torch.distributed as dist
 import torch.utils.data.distributed
 from warpctc_pytorch import CTCLoss
 
+from novograd import (AdamW,
+                      Novograd)
 from decoder import GreedyDecoder
 from model import DeepSpeech, supported_rnns
 from data.utils import reduce_tensor, get_cer_wer
@@ -165,7 +167,7 @@ def build_optimizer(args_, parameters_):
                                              momentum=args_.momentum, nesterov=True,
                                              weight_decay=args_.weight_decay)
             if args_.use_lookahead:
-                print('Using SGD + Lookahead')                
+                print('Using SGD + Lookahead')
                 from lookahead import Lookahead
                 return Lookahead(base_optimizer=base_optimizer,
                                  k=5,
@@ -179,7 +181,12 @@ def build_optimizer(args_, parameters_):
     elif args_.optimizer=='adam':
         print('Using ADAM')
         return torch.optim.Adam(parameters_, lr=args_.lr)
-
+    elif args_.optimizer=='novograd':
+        print('Using Novograd')
+        return Novograd(parameters_, lr=args_.lr)
+    elif args_.optimizer=='adamw':
+        print('Using ADAMW')
+        return AdamW(parameters_, lr=args_.lr)
 
 viz = None
 tensorboard_writer = None
@@ -351,11 +358,11 @@ def get_lr():
 
 
 def set_lr(lr):
-    print('Learning rate annealed to: {lr:.6g}'.format(lr=lr))    
+    print('Learning rate annealed to: {lr:.6g}'.format(lr=lr))
     if args.use_lookahead:
         optim_state = optimizer.optimizer.state_dict()
         optim_state['param_groups'][0]['lr'] = lr
-        optimizer.optimizer.load_state_dict(optim_state)        
+        optimizer.optimizer.load_state_dict(optim_state)
     else:
         optim_state = optimizer.state_dict()
         optim_state['param_groups'][0]['lr'] = lr
@@ -814,7 +821,11 @@ def train(from_epoch, from_iter, from_checkpoint):
                 if (i + 1) % checkpoint_per_batch == 0:
                     file_path = '%s/checkpoint_%04d_epoch_%02d_iter_%05d.model' % (save_folder, checkpoint + 1, epoch + 1, i + 1)
                     print("Saving checkpoint model to %s" % file_path)
-                    torch.save(DeepSpeech.serialize(model, optimizer=optimizer, epoch=epoch,
+                    if args.use_lookahead:
+                        _optimizer = optimizer.optimizer
+                    else:
+                        _optimizer = optimizer
+                    torch.save(DeepSpeech.serialize(model, optimizer=_optimizer, epoch=epoch,
                                                     iteration=i,
                                                     loss_results=plots.loss_results,
                                                     wer_results=plots.wer_results,
@@ -828,6 +839,7 @@ def train(from_epoch, from_iter, from_checkpoint):
                                                     trainval_checkpoint_cer_results=trainval_checkpoint_plots.cer_results,
                                                     avg_loss=total_loss / num_losses), file_path)
                     train_dataset.save_curriculum(file_path + '.csv')
+                    del _optimizer
 
                     check_model_quality(epoch, checkpoint, total_loss / num_losses, trainer.get_cer(), trainer.get_wer())
                     save_validation_curriculums(save_folder, checkpoint + 1, epoch + 1, i + 1)
@@ -857,8 +869,12 @@ def train(from_epoch, from_iter, from_checkpoint):
 
         if args.checkpoint and is_leader:  # checkpoint after the end of each epoch
             file_path = '%s/model_checkpoint_%04d_epoch_%02d.model' % (save_folder, checkpoint+1, epoch + 1)
+            if args.use_lookahead:
+                _optimizer = optimizer.optimizer
+            else:
+                _optimizer = optimizer
             torch.save(DeepSpeech.serialize(model,
-                                            optimizer=optimizer,
+                                            optimizer=_optimizer,
                                             epoch=epoch,
                                             loss_results=plots.loss_results,
                                             wer_results=plots.wer_results,
@@ -873,6 +889,7 @@ def train(from_epoch, from_iter, from_checkpoint):
                                             ), file_path)
             train_dataset.save_curriculum(file_path + '.csv')
             save_validation_curriculums(save_folder, checkpoint + 1, epoch + 1, 0)
+            del _optimizer
 
             # anneal lr
             print("Checkpoint:", checkpoint)
@@ -880,8 +897,12 @@ def train(from_epoch, from_iter, from_checkpoint):
 
         if (best_score is None or new_score < best_score) and is_leader:
             print("Found better validated model, saving to %s" % args.model_path)
+            if args.use_lookahead:
+                _optimizer = optimizer.optimizer
+            else:
+                _optimizer = optimizer
             torch.save(DeepSpeech.serialize(model,
-                                            optimizer=optimizer,
+                                            optimizer=_optimizer,
                                             epoch=epoch,
                                             loss_results=plots.loss_results,
                                             wer_results=plots.wer_results,
@@ -896,6 +917,7 @@ def train(from_epoch, from_iter, from_checkpoint):
                                             ),
                        args.model_path)
             train_dataset.save_curriculum(args.model_path + '.csv')
+            del _optimizer
             best_score = new_score
 
 

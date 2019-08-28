@@ -383,9 +383,16 @@ class DeepSpeech(nn.Module):
                     'dilated_blocks': [] # no dilation
                 })
             )
-            self.fc = nn.Sequential(
-                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
-            )
+            # https://arxiv.org/abs/1905.09788
+            if False:
+                self.fc = MultiSampleFC(heads=8,
+                                        dropout_rate=dropout,
+                                        in_channels=size,
+                                        out_channels=num_classes)
+            else:
+                self.fc = nn.Sequential(
+                    nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+                )
             # make checkpoints reverse compatible
             if hasattr(self, '_phoneme_count'):
                 self.fc_phoneme = nn.Sequential(
@@ -1941,7 +1948,55 @@ class SeqLayerNormRestore(nn.Module):
 		super(SeqLayerNormRestore, self).__init__()
 	def forward(self, x):
 		return x.permute(0, 2, 1, 3).contiguous()
-       
+
+
+class GaussianDropout(nn.Module):
+    def __init__(self, alpha=1.0):
+        super(GaussianDropout, self).__init__()
+        self.alpha = torch.Tensor([alpha])
+        
+    def forward(self, x):
+        """
+        Sample noise   e ~ N(1, alpha)
+        Multiply noise h = h_ * e
+        """
+        if self.train():
+            # N(1, alpha)
+            epsilon = torch.randn(x.size()) * self.alpha + 1
+            epsilon = epsilon.to(self.device)
+            return x * epsilon
+        else:
+            return x
+
+
+class MultiSampleFC(nn.Module):
+    def __init__(self,
+                 heads=8,
+                 dropout_rate=0.2,
+                 in_channels=None,
+                 out_channels=None):
+        super(MultiSampleFC, self).__init__()
+        self.heads = heads
+        self.dropout_rate = dropout_rate
+        self.layers = nn.Conv1d(in_channels=in_channels,
+                                out_channels=out_channels,
+                                kernel_size=1)
+        
+    def forward(self, x):
+        """
+        Idea similar to https://arxiv.org/abs/1905.09788
+        Without multiple loss computation
+        """
+        if self.train():
+            outputs = []
+            prob = 1 - self.dropout_rate
+            for i in range(self.heads):
+                mask = torch.bernoulli(torch.full_like(x, prob))
+                outputs.append(self.layers(x * mask))
+            out = torch.mean(torch.stack(outputs, dim=0), dim=0)
+            return out
+        else:
+            return self.layers(x)            
 
 def main():
     import os.path
