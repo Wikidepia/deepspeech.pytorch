@@ -28,11 +28,11 @@ supported_rnns = {
     'cnn_jasper': None,
     'cnn_jasper_2': None,
     'cnn_residual_repeat': None,
-    'tds':None,
+    'tds': None,
     'cnn_residual_repeat_sep': None,
-    'cnn_residual_repeat_sep_bpe':None,
-    'cnn_residual_repeat_sep_down8':None,
-    'cnn_inv_bottleneck_repeat_sep_down8':None,
+    'cnn_residual_repeat_sep_bpe': None,
+    'cnn_residual_repeat_sep_down8': None,
+    'cnn_inv_bottleneck_repeat_sep_down8': None,
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -993,10 +993,11 @@ class ResidualRepeatWav2Letter(nn.Module):
                               padding=15, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
                               nonlinearity=nn.ReLU(inplace=True),
                               se_ratio=0, skip=False, repeat=1)]) # no skips and attention
-        modules.extend([Block(_in=size, out=size, kernel_size=1,
-                              padding=0, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
-                              nonlinearity=nn.ReLU(inplace=True),
-                              se_ratio=0, skip=False, repeat=1)]) # no skips and attention
+        if True:
+            modules.extend([Block(_in=size, out=size, kernel_size=1,
+                                padding=0, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
+                                nonlinearity=nn.ReLU(inplace=True),
+                                se_ratio=0, skip=False, repeat=1)]) # no skips and attention
 
         self.layers = nn.Sequential(*modules)
 

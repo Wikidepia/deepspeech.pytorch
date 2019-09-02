@@ -30,6 +30,8 @@ parser.add_argument('--norm', default='max_frame', action="store",
 parser.add_argument('--data-parallel', dest='data_parallel', action='store_true',
                     help='Use data parallel')
 parser.add_argument('--report-file', metavar='DIR', default='data/test_report.csv', help="Filename to save results")
+parser.add_argument('--bpe-as-lists', action="store_true", help="save BPE results as eval lists")
+
 no_decoder_args = parser.add_argument_group("No Decoder Options", "Configuration options for when no decoder is "
                                                                   "specified")
 no_decoder_args.add_argument('--output-path', default=None, type=str, help="Where to save raw acoustic output")
@@ -79,7 +81,8 @@ if __name__ == '__main__':
                                  cutoff_top_n=args.cutoff_top_n, cutoff_prob=args.cutoff_prob,
                                  beam_width=args.beam_width, num_processes=args.lm_workers)
     elif args.decoder == "greedy":
-        decoder = GreedyDecoder(labels, blank_index=labels.index('_'))
+        decoder = GreedyDecoder(labels, blank_index=labels.index('_'),
+                                bpe_as_lists=args.bpe_as_lists)
     else:
         decoder = None
     target_decoder = GreedyDecoder(labels, blank_index=labels.index('_'))

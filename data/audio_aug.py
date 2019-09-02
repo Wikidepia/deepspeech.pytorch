@@ -102,7 +102,7 @@ class PitchShift:
                 wav = pyrb.pitch_shift(wav, sr, alpha)
             else:
                 wav = librosa.effects.pitch_shift(wav, sr, n_steps=alpha)
-        return {'wav':wav,'sr':sr}
+        return {'wav': wav,'sr': sr}
 
 
 class TorchAudioSoxChain:
@@ -117,40 +117,43 @@ class TorchAudioSoxChain:
         self.max_duration = max_duration * sr
 
     def __call__(self, wav=None, sr=None):
-        assert len(wav.shape)==1
+        assert len(wav.shape) == 1
         _wav = None
         input_dtype = wav.dtype
-        if random.random() < self.prob:
-            speed_alpha = 1.0 + self.speed_limit * random.uniform(-1, 1)
-            pitch_alpha = self.pitch_limit * random.uniform(-1, 1) * 100 # in cents
-            #  https://github.com/carlthome/python-audio-effects/blob/master/pysndfx/dsp.py#L531
-            with NamedTemporaryFile(suffix=".wav",
-                                    dir=tempfile_dir) as temp_file:
-                temp_filename = temp_file.name
-                # always feed int16 to sox
-                if wav.dtype == np.float32():
-                    wav_int = float2int(wav)
-                    wav_write(temp_filename,
-                              sr,
-                              wav_int)
-                else:
-                    wav_write(temp_filename,
-                              sr,
-                              wav)
+        try:
+            if random.random() < self.prob:
+                speed_alpha = 1.0 + self.speed_limit * random.uniform(-1, 1)
+                pitch_alpha = self.pitch_limit * random.uniform(-1, 1) * 100 # in cents
+                #  https://github.com/carlthome/python-audio-effects/blob/master/pysndfx/dsp.py#L531
+                with NamedTemporaryFile(suffix=".wav",
+                                        dir=tempfile_dir) as temp_file:
+                    temp_filename = temp_file.name
+                    # always feed int16 to sox
+                    if wav.dtype == np.float32():
+                        wav_int = float2int(wav)
+                        wav_write(temp_filename,
+                                  sr,
+                                  wav_int)
+                    else:
+                        wav_write(temp_filename,
+                                  sr,
+                                  wav)
 
-                torchaudio.initialize_sox()
-                effects = torchaudio.sox_effects.SoxEffectsChain()
-                effects.append_effect_to_chain('pitch', pitch_alpha)
-                effects.append_effect_to_chain('tempo', [speed_alpha])
-                effects.append_effect_to_chain('rate', sr)
-                effects.set_input_file(temp_filename)
-                _wav, _sr = effects.sox_build_flow_effects()
-                torchaudio.shutdown_sox()
-                _wav = _wav.numpy().squeeze()
-                assert sr == _sr
-                # always float output
-                if _wav.dtype == np.int16():
-                    _wav = int2float(_wav)
+                    torchaudio.initialize_sox()
+                    effects = torchaudio.sox_effects.SoxEffectsChain()
+                    effects.append_effect_to_chain('pitch', pitch_alpha)
+                    effects.append_effect_to_chain('tempo', [speed_alpha])
+                    effects.append_effect_to_chain('rate', sr)
+                    effects.set_input_file(temp_filename)
+                    _wav, _sr = effects.sox_build_flow_effects()
+                    torchaudio.shutdown_sox()
+                    _wav = _wav.numpy().squeeze()
+                    assert sr == _sr
+                    # always float output
+                    if _wav.dtype == np.int16():
+                        _wav = int2float(_wav)
+        except Exception as e:
+            print(str(e))
 
         if _wav is not None:
             return {'wav': _wav,'sr': sr}
@@ -165,7 +168,7 @@ class SoxPhoneCodec:
     def __init__(self, prob=0.5,
                  sox_codec_list=['gsm', 'amr-nb', 'ogg'],
                  sox_sr_list=[8, 16],
-                 quality_presets=list(range(1,8))):
+                 quality_presets=list(range(1, 8))):
         self.prob = prob
         self.sox_codec_list = sox_codec_list
         self.sox_sr_list = sox_sr_list
