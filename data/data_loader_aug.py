@@ -26,6 +26,8 @@ from torch.utils.data.sampler import Sampler
 from torch.distributed import get_world_size
 
 from data.labels import Labels
+from data.pytorch_stft import (MelSTFT,
+                               STFT)
 from data.phoneme_labels import PhonemeLabels
 from data.curriculum import Curriculum
 from data.audio_aug import (ChangeAudioSpeed,
@@ -46,11 +48,11 @@ from data.spectrogram_aug import (SCompose,
                                   FrequencyMask,
                                   TimeMask)
 from data.audio_loader import load_audio_norm
+
 from scipy.io import wavfile
 
 tq = tqdm.tqdm
 MAX_DURATION_AUG = 10
-
 
 windows = {'hamming': scipy.signal.hamming,
            'hann': scipy.signal.hann,
@@ -146,7 +148,34 @@ class SpectrogramParser(AudioParser):
         self.augment = augment
         self.channel = channel
         self.cache_path = cache_path
-        self.noiseInjector= None
+        self.noiseInjector = None
+
+        self.pytorch_mel = audio_conf['pytorch_mel']
+        self.pytorch_stft = audio_conf['pytorch_stft']
+
+        if self.pytorch_mel:
+            print('Using PyTorch STFT + Mel')
+            # try standard params
+            # but use 161 mel channels
+            self.stft = MelSTFT(
+                filter_length=1024,
+                hop_length=256,
+                win_length=1024,
+                n_mel_channels=161,
+                sampling_rate=self.sample_rate,
+                mel_fmin=0.0,
+                mel_fmax=None)
+
+        elif self.pytorch_stft:
+            print('Using PyTorch STFT')            
+            n_fft = int(sample_rate * (self.window_size + 1e-8))
+            win_length = n_fft
+            hop_length = int(sample_rate * (self.window_stride + 1e-8))
+
+            self.stft = STFT(n_fft,
+                             hop_length,
+                             win_length)
+
         """
         self.noiseInjector = NoiseInjection(audio_conf['noise_dir'], self.sample_rate,
                                             audio_conf['noise_levels']) if audio_conf.get(
@@ -215,10 +244,14 @@ class SpectrogramParser(AudioParser):
             # use sonopy stft
             # https://github.com/MycroftAI/sonopy/blob/master/sonopy.py#L61
             # spect = self.audio_to_stft_numpy(y, sample_rate)
-            spect = self.normalize_audio(spect)
+
+            # normalization required only for stft transformations
+            # melspec already contains normalization
+            if not self.pytorch_mel:
+                spect = self.normalize_audio(spect)
 
             # FIXME: save to the file, but only if it's for
-            if False:#if USE_CACHE:
+            if False: #if USE_CACHE:
                 if tempo_id == 0:
                     try:
                         np.save(str(cache_fn) + '.tmp.npy', {'spect': spect})
@@ -227,8 +260,9 @@ class SpectrogramParser(AudioParser):
                     except KeyboardInterrupt:
                         os.unlink(cache_fn)
 
-        if self.augment and self.normalize == 'max_frame':
-            spect.add_(torch.rand(1) - 0.5)
+        if not self.pytorch_mel:
+            if self.augment and self.normalize == 'max_frame':
+                spect.add_(torch.rand(1) - 0.5)
         return spect
 
     def parse_audio_for_transcription(self, audio_path):
@@ -244,13 +278,27 @@ class SpectrogramParser(AudioParser):
         if not np.isfinite(y).all():
             y = np.clip(y, -1, 1)
             print('Audio buffer is not finite everywhere, clipping')
-        
-        D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
-                         win_length=win_length, window=self.window)
 
-        # spect, phase = librosa.magphase(D)
-        # 3x faster
-        spect = np.abs(D)
+        if self.pytorch_mel:
+            with torch.no_grad():
+                spect = self.stft.mel_spectrogram(
+                    torch.FloatTensor(
+                        np.expand_dims(y.astype(np.float32) , axis=0)
+                        )
+                    ).squeeze(0)
+        elif self.pytorch_stft:
+            with torch.no_grad():
+                magnitudes, phases = self.stft.transform(
+                    torch.FloatTensor(
+                        np.expand_dims(y.astype(np.float32) , axis=0)
+                        )
+                    )
+        else:
+            D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
+                            win_length=win_length, window=self.window)
+            # spect, phase = librosa.magphase(D)
+            # 3x faster
+            spect = np.abs(D)
 
         shape = spect.shape
         if shape[0] < 161:
@@ -258,6 +306,7 @@ class SpectrogramParser(AudioParser):
             spect[81:] = spect[80:0:-1]
             if sample_rate>=16000:
                 print('Warning - wrong stft size for audio with sampling rate 16 kHz or higher')
+
         # print(spect.shape)
         # print(shape, spect.shape)
         if self.aug_prob_spect>0:

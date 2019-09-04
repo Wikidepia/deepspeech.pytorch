@@ -1,13 +1,13 @@
 import math
-from collections import OrderedDict
-
 import torch
 import torch.nn as nn
 from functools import reduce
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.nn.functional import glu
+from collections import OrderedDict
 from torch.nn.parameter import Parameter
+from switchable_norm import SwitchNorm1d
 
 try:
     from sru import SRU
@@ -1212,6 +1212,11 @@ class SeparableRepeatBlock(nn.Module):
         has_se = (se_ratio is not None) and (0 < se_ratio <= 1)
         dropout = nn.Dropout(dropout)
 
+        if True:
+            norm_block = nn.BatchNorm1d
+        else:
+            norm_block = SwitchNorm1d
+
         last_out = out
         if inverted_bottleneck:
             _in = _in // inverted_bottleneck_scale
@@ -1246,8 +1251,8 @@ class SeparableRepeatBlock(nn.Module):
                                       dilation=dilation,
                                       groups=groups if (in_ch % groups + out_ch % groups) == 0 else 1,
                                       bias=bias),
-                            nn.BatchNorm1d(out_ch,
-                                           momentum=bnm),
+                            norm_block(out_ch,
+                                       momentum=bnm),
                             nonlinearity,
                             dropout])
 

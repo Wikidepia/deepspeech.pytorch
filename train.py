@@ -20,6 +20,11 @@ from data.data_loader_aug import (SpectrogramDataset,
                                   BucketingLenSampler,
                                   DistributedBucketingSampler)
 
+
+import torch
+import warnings
+from torch._six import inf
+
 tq = tqdm.tqdm
 
 VISIBLE_DEVICES = os.environ.get('CUDA_VISIBLE_DEVICES', '').split(',') or ['0']
@@ -52,6 +57,9 @@ parser.add_argument('--use-phonemes',  action='store_true', default=False)
 parser.add_argument('--batch-similar-lens', dest='batch_similar_lens', action='store_true',
                     help='Force usage of sampler that batches items with similar duration together')
 
+parser.add_argument('--pytorch-mel', action='store_true', help='Use pytorch based STFT + MEL')
+parser.add_argument('--pytorch-stft', action='store_true', help='Use pytorch based STFT')
+
 parser.add_argument('--window-size', default=.02, type=float, help='Window size for spectrogram in seconds')
 parser.add_argument('--window-stride', default=.01, type=float, help='Window stride for spectrogram in seconds')
 parser.add_argument('--window', default='hamming', help='Window type for spectrogram generation')
@@ -70,6 +78,7 @@ parser.add_argument('--batch-norm-momentum', default=0.1, type=float, help='Batc
 
 parser.add_argument('--max-norm', default=100, type=int, help='Norm cutoff to prevent explosion of gradients')
 parser.add_argument('--norm-warmup-epochs', default=1000, type=int, help='Do gradient clipping only before some epoch')
+parser.add_argument('--gradient-accumulation-steps', default=1, type=int, help='Accumulate gradients for some time first')
 
 parser.add_argument('--learning-anneal', default=1.1, type=float, help='Annealing applied to learning rate every epoch')
 parser.add_argument('--checkpoint-anneal', default=1.0, type=float,
@@ -130,6 +139,61 @@ torch.cuda.manual_seed_all(123456)
 
 def to_np(x):
     return x.data.cpu().numpy()
+
+
+def clip_grad_norm_(parameters, max_norm, norm_type=2):
+    r"""Clips gradient norm of an iterable of parameters.
+
+    The norm is computed over all gradients together, as if they were
+    concatenated into a single vector. Gradients are modified in-place.
+
+    Arguments:
+        parameters (Iterable[Tensor] or Tensor): an iterable of Tensors or a
+            single Tensor that will have gradients normalized
+        max_norm (float or int): max norm of the gradients
+        norm_type (float or int): type of the used p-norm. Can be ``'inf'`` for
+            infinity norm.
+
+    Returns:
+        Total norm of the parameters (viewed as a single vector).
+    """
+    if isinstance(parameters, torch.Tensor):
+        parameters = [parameters]
+    parameters = list(filter(lambda p: p.grad is not None, parameters))
+    max_norm = float(max_norm)
+    norm_type = float(norm_type)
+    if norm_type == inf:
+        total_norm = max(p.grad.data.abs().max() for p in parameters)
+    else:
+        total_norm = 0
+        for p in parameters:
+            param_norm = p.grad.data.norm(norm_type)
+            total_norm += param_norm.item() ** norm_type
+        total_norm = total_norm ** (1. / norm_type)
+    clip_coef = max_norm / (total_norm + 1e-6)
+    # print(clip_coef)
+    if clip_coef < 1:
+        for p in parameters:
+            p.grad.data.mul_(clip_coef)
+    return total_norm
+
+
+def calc_grad_norm(parameters, max_norm, norm_type=2):
+    if isinstance(parameters, torch.Tensor):
+        parameters = [parameters]
+    parameters = list(filter(lambda p: p.grad is not None, parameters))
+    max_norm = float(max_norm)
+    norm_type = float(norm_type)
+    if norm_type == inf:
+        total_norm = max(p.grad.data.abs().max() for p in parameters)
+    else:
+        total_norm = 0
+        for p in parameters:
+            param_norm = p.grad.data.norm(norm_type)
+            total_norm += param_norm.item() ** norm_type
+        total_norm = total_norm ** (1. / norm_type)
+    clip_coef = max_norm / (total_norm + 1e-6)
+    return clip_coef
 
 
 class AverageMeter(object):
@@ -705,46 +769,64 @@ class Trainer:
         else:
             loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
+            if args.gradient_accumulation_steps > 1: # average loss by accumulation steps
+                loss = loss / args.gradient_accumulation_steps
             loss = loss.to(device)
 
         inf = float("inf")
         if args.distributed:
             loss_value = reduce_tensor(loss, args.world_size).item()
         else:
-            loss_value = loss.item()
+            loss_value = loss.item() * args.gradient_accumulation_steps
+
         if loss_value == inf or loss_value == -inf:
             print("WARNING: received an inf loss, setting loss value to 1000")
             loss_value = 1000
-
 
         loss_value = float(loss_value)
         losses.update(loss_value, inputs.size(0))
 
         # update_curriculum
 
-        # compute gradient
-        optimizer.zero_grad()
-        loss.backward()
+        if (batch_id + 1) % args.gradient_accumulation_steps == 0:
+            # compute gradient
+            optimizer.zero_grad()
+            loss.backward()
 
-        if args.max_norm > 0:
-            if epoch < args.norm_warmup_epochs:
-                # warmup, always do clipping
-                torch.nn.utils.clip_grad_norm_(model.parameters(),
+            # spare time by doing clipping
+            # only once each N epochs
+            if args.max_norm > 0:
+                if epoch < args.norm_warmup_epochs:
+                    # warmup, always do clipping
+
+                    # try just lr reduction
+                    # instead of gradient clipping
+                    lr_clipping = False
+
+                    if lr_clipping:
+                        clip_coef = calc_grad_norm(model.parameters(),
                                                 args.max_norm)
-            else:
-                # clip only when gradients explode
-                if loss_value == inf or loss_value == -inf:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(),
-                                                    args.max_norm)
+                        underlying_lr = get_lr()
+                        set_lr(underlying_lr * clip_coef)
+                    else:
+                        clip_grad_norm_(model.parameters(),
+                                        args.max_norm)
+                else:
+                    # clip only when gradients explode
+                    if loss_value == inf or loss_value == -inf:
+                        clip_grad_norm_(model.parameters(),
+                                        args.max_norm)
 
-        if torch.isnan(logits).any():
-            # work around bad data
-            print("WARNING: Skipping NaNs in backward step")
-        else:
-            # SGD step
-            optimizer.step()
-            if args.enorm:
-                enorm.step()
+            if torch.isnan(logits).any():
+                # work around bad data
+                print("WARNING: Skipping NaNs in backward step")
+            else:
+                # SGD step
+                optimizer.step()
+                if lr_clipping:
+                    set_lr(underlying_lr)
+                if args.enorm:
+                    enorm.step()
 
         # measure elapsed time
         batch_time.update(time.time() - self.end)
@@ -1053,6 +1135,8 @@ if __name__ == '__main__':
                 # labels is a string
                 labels = str(''.join(json.load(label_file)))
 
+        assert args.pytorch_stft != args.pytorch_mel
+
         audio_conf = dict(sample_rate=args.sample_rate,
                           window_size=args.window_size,
                           window_stride=args.window_stride,
@@ -1064,7 +1148,9 @@ if __name__ == '__main__':
                           aug_prob_spect=args.aug_prob_spect,
                           use_bpe=args.use_bpe,
                           sp_model=args.sp_model,
-                          aug_type=args.aug_type)
+                          aug_type=args.aug_type,
+                          pytorch_mel=args.pytorch_mel,
+                          pytorch_stft=args.pytorch_stft)
 
         if args.use_phonemes:
             audio_conf['phoneme_count'] = len(phoneme_map)
