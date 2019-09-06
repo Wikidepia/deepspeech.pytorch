@@ -68,19 +68,19 @@ class FrequencyMask:
         self.dropout_width = dropout_width
 
     def __call__(self, spect):
-        assert len(spect.shape)==2
-        freqs,frames = spect.shape
-        assert self.dropout_width<freqs
+        assert len(spect.shape) == 2
+        freqs, frames = spect.shape
+        assert self.dropout_width < freqs
         for i in range(0,self.bands):
             # adding several dropot bands
             # becomes progressively harder
             if random.random() < self.prob:
                 band_width = random.randint(0,
                                             int(self.dropout_width))
-                band_center = random.randint(0,freqs)
-                lower_band = max(0,int(band_center - band_width//2))
+                band_center = random.randint(0, freqs)
+                lower_band = max(0, int(band_center - band_width//2))
                 higher_band = min(int(band_center + band_width//2),freqs)
-                spect[lower_band:higher_band,:] = 0
+                spect[lower_band:higher_band, :] = 0
         return spect
   
 
@@ -90,15 +90,15 @@ class TimeMask:
                  prob=.25,
                  dropout_length=50,
                  max_dropout_ratio=.15):
-        assert dropout_length>0
+        assert dropout_length > 0
         self.bands = bands
         self.prob = prob
         self.dropout_length = dropout_length
         self.max_dropout_ratio = max_dropout_ratio
 
     def __call__(self, spect):
-        assert len(spect.shape)==2        
-        freqs,frames = spect.shape
+        assert len(spect.shape) == 2        
+        freqs, frames = spect.shape
         for i in range(0,self.bands):
             # adding several dropot bands
             # becomes progressively harder
@@ -109,10 +109,10 @@ class TimeMask:
                 # dropout should not be more than some % of audio
                 band_width = min(band_width,
                                  int(self.max_dropout_ratio*frames))
-                band_center = random.randint(0,frames)
-                lower_band = max(0,int(band_center - band_width//2))
+                band_center = random.randint(0, frames)
+                lower_band = max(0, int(band_center - band_width//2))
                 higher_band = min(int(band_center + band_width//2),frames)
-                spect[:,lower_band:higher_band] = 0
+                spect[:, lower_band:higher_band] = 0
         return spect
 
 # TODO rewrite to be compatible with spectrograms
