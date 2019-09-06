@@ -161,16 +161,16 @@ class SpectrogramParser(AudioParser):
                 filter_length=1024,
                 hop_length=256,
                 win_length=1024,
-                n_mel_channels=161,
+                n_mel_channels=80,
                 sampling_rate=self.sample_rate,
                 mel_fmin=0.0,
                 mel_fmax=None)
 
         elif self.pytorch_stft:
             print('Using PyTorch STFT')            
-            n_fft = int(sample_rate * (self.window_size + 1e-8))
+            n_fft = int(self.sample_rate * (self.window_size + 1e-8))
             win_length = n_fft
-            hop_length = int(sample_rate * (self.window_stride + 1e-8))
+            hop_length = int(self.sample_rate * (self.window_stride + 1e-8))
 
             self.stft = STFT(n_fft,
                              hop_length,
@@ -293,6 +293,7 @@ class SpectrogramParser(AudioParser):
                         np.expand_dims(y.astype(np.float32) , axis=0)
                         )
                     )
+                spect = magnitudes.squeeze(0)
         else:
             D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length,
                             win_length=win_length, window=self.window)
@@ -300,23 +301,25 @@ class SpectrogramParser(AudioParser):
             # 3x faster
             spect = np.abs(D)
 
-        shape = spect.shape
-        if shape[0] < 161:
-            spect.resize((161, *shape[1:]))
-            spect[81:] = spect[80:0:-1]
-            if sample_rate>=16000:
-                print('Warning - wrong stft size for audio with sampling rate 16 kHz or higher')
+        if not self.pytorch_mel:
+            shape = spect.shape
+            if shape[0] < 161:
+                spect.resize((161, *shape[1:]))
+                spect[81:] = spect[80:0:-1]
+                if sample_rate>=16000:
+                    print('Warning - wrong stft size for audio with sampling rate 16 kHz or higher')
 
         # print(spect.shape)
         # print(shape, spect.shape)
-        if self.aug_prob_spect>0:
-            spect = self.augs_spect(spect)
-
-        if self.aug_prob_8khz>0:
-            if random.random() < self.aug_prob_8khz:
-                # poor man's robustness to poor recording quality
-                # pretend as if audio is 8kHz
-                spect[81:] = 0
+        # turn off spect augs for mel-specs
+        if not self.pytorch_mel:        
+            if self.aug_prob_spect>0:
+                spect = self.augs_spect(spect)
+            if self.aug_prob_8khz>0:
+                if random.random() < self.aug_prob_8khz:
+                    # poor man's robustness to poor recording quality
+                    # pretend as if audio is 8kHz
+                    spect[81:] = 0
         return spect[:161]
 
     def audio_to_stft_numpy(self, y, sample_rate):
