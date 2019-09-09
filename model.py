@@ -8,8 +8,7 @@ from torch.nn.functional import glu
 from collections import OrderedDict
 from torch.nn.parameter import Parameter
 from switchable_norm import SwitchNorm1d
-from linknet import (DecoderBlock,
-                     DenoiseLoss)
+from linknet import DecoderBlock
 
 try:
     from sru import SRU
@@ -629,6 +628,11 @@ class DeepSpeech(nn.Module):
                 x_phoneme = x_phoneme.transpose(1, 2).transpose(0, 1).contiguous()
             x = self.fc(x)
             x = x.transpose(1, 2).transpose(0, 1).contiguous()
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8_denoise':
+            x = x.squeeze(1)
+            x, denoise_mask = self.rnns(x)
+            x = self.fc(x)
+            x = x.transpose(1, 2).transpose(0, 1).contiguous()            
         else:
             # x = self.dropout1(x)
             x, _ = self.conv(x, output_lengths)
@@ -663,7 +667,10 @@ class DeepSpeech(nn.Module):
             return x, outs, output_lengths, x_phoneme, outs_phoneme
         else:
             # print(output_lengths, x.size())
-            return x, outs, output_lengths
+            if self._rnn_type == 'cnn_residual_repeat_sep_down8_denoise':
+                return x, outs, output_lengths, denoise_mask
+            else:
+                return x, outs, output_lengths
 
     def get_seq_lens(self, input_length):
         """
@@ -675,7 +682,8 @@ class DeepSpeech(nn.Module):
         seq_len = input_length
         if self._rnn_type in ['cnn_residual_repeat_sep_bpe',
                               'cnn_residual_repeat_sep_down8',
-                              'cnn_inv_bottleneck_repeat_sep_down8']:
+                              'cnn_inv_bottleneck_repeat_sep_down8',
+                              'cnn_residual_repeat_sep_down8_denoise']:
             for m in self.rnns.modules():
                 if type(m) == nn.modules.conv.Conv1d:
                     seq_len = ((seq_len + 2 * m.padding[0] - m.dilation[0] * (m.kernel_size[0] - 1) - 1) / m.stride[0] + 1)
@@ -1036,10 +1044,12 @@ class ResidualRepeatWav2Letter(nn.Module):
         if self.denoise:
             assert not inverted_bottleneck
             assert len(modules) == 1 + 3 * (repeat_layers // 3) + 1 + 1
-            self.conv1 =      nn.Sequential(*modules[                             : 1 + 1 * (repeat_layers // 3)])
-            self.conv2 =      nn.Sequential(*modules[1 + 1 * (repeat_layers // 3) : 1 + 2 * (repeat_layers // 3)])
-            self.conv3 =      nn.Sequential(*modules[1 + 2 * (repeat_layers // 3) : 1 + 3 * (repeat_layers // 3)])
+            self.conv1      = nn.Sequential(*modules[                             : 1 + 1 * (repeat_layers // 3)])
+            self.conv2      = nn.Sequential(*modules[1 + 1 * (repeat_layers // 3) : 1 + 2 * (repeat_layers // 3)])
+            self.conv3      = nn.Sequential(*modules[1 + 2 * (repeat_layers // 3) : 1 + 3 * (repeat_layers // 3)])
             self.final_conv = nn.Sequential(*modules[1 + 3 * (repeat_layers // 3) : ])
+            self.denoise    = LinkNetDenoising(num_classes=1,
+                                               filters=[161]+[cnn_width]*3)
         else:
             self.layers = nn.Sequential(*modules)
 
@@ -1049,8 +1059,8 @@ class ResidualRepeatWav2Letter(nn.Module):
             e2 = self.conv1(e1)
             e3 = self.conv2(e2)
             e4 = self.conv3(e3)
-            out = self.final_conv(e4)
-            return e1, e2, e3, e4, out
+            return (self.final_conv(e4),
+                    self.denoise(e1, e2, e3, e4))
         else:
             return self.layers(x)
 

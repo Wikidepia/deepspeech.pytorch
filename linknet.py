@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 
 
@@ -50,6 +51,27 @@ class DenoiseLoss(nn.Module):
         super(DenoiseLoss, self).__init__()
 
     def forward(self, output, target):
-        mse_loss = nn.MSELoss()(output, target)
-        bce_loss = nn.BCEWithLogitsLoss()(output, target)
+        mse_loss = nn.MSELoss(reduction=None)(output, target)
+        bce_loss = nn.BCEWithLogitsLoss(reduction=None)(output, target)
         return mse_loss + bce_loss
+
+
+class MaskSimilarity(nn.Module):
+    def __init__(self,
+                 thresholds=[0.05, 0.1, 0.15]):
+        super().__init__()
+        self.thresholds = thresholds
+
+    def forward(self, outputs, targets):
+        assert outputs.size() == targets.size()
+
+        dice_output = nn.functional.sigmoid(outputs)
+        abs_diff = torch.abs(dice_output - targets.float())
+        total = (abs_diff < 1.0).sum()
+
+        metrics = []
+        for threshold in self.thresholds:
+            similar = (abs_diff < threshold).sum()
+            metrics.append(similar / total)
+
+        return sum(metrics) / len(metrics)

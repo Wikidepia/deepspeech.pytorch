@@ -12,6 +12,8 @@ from warpctc_pytorch import CTCLoss
 
 from novograd import (AdamW,
                       Novograd)
+from linknet import (DenoiseLoss,
+                     MaskSimilarity)
 from decoder import GreedyDecoder
 from model import DeepSpeech, supported_rnns
 from data.utils import reduce_tensor, get_cer_wer
@@ -59,6 +61,8 @@ parser.add_argument('--batch-similar-lens', dest='batch_similar_lens', action='s
 
 parser.add_argument('--pytorch-mel', action='store_true', help='Use pytorch based STFT + MEL')
 parser.add_argument('--pytorch-stft', action='store_true', help='Use pytorch based STFT')
+parser.add_argument('--denoise', action='store_true', help='Use pytorch based STFT')
+
 
 parser.add_argument('--window-size', default=.02, type=float, help='Window size for spectrogram in seconds')
 parser.add_argument('--window-stride', default=.01, type=float, help='Window stride for spectrogram in seconds')
@@ -468,6 +472,8 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 (logits, probs,
                  output_sizes,
                  phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
+            elif args.denoise:
+                logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)                  
             else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
@@ -589,6 +595,8 @@ def calculate_trainval_quality_metrics(checkpoint,
                 (logits, probs,
                  output_sizes,
                  phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
+            elif args.denoise:
+                logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)                 
             else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
@@ -699,6 +707,14 @@ class Trainer:
              target_sizes,
              phoneme_targets,
              phoneme_target_sizes) = data
+        elif args.denoise:
+             (inputs,
+              targets,
+              filenames,
+              input_percentages,
+              target_sizes,
+              mask_targets) = data
+              mask_targets = masks.to(device)     
         else:
             inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
@@ -713,6 +729,8 @@ class Trainer:
             (logits, probs,
              output_sizes,
              phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
+        elif args.denoise:
+            logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)
         else:
             logits, probs, output_sizes = model(inputs, input_sizes)
 
@@ -766,6 +784,14 @@ class Trainer:
                                                        phoneme_target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
             loss = loss.to(device)
+        elif args.denoise:
+            loss = criterion(logits,
+                             targets,
+                             output_sizes.cpu(),
+                             target_sizes) + mask_criterion(mask_logits,
+                                                            mask_targets)
+            loss = loss / inputs.size(0)  # average the loss by minibatch
+            loss = loss.to(device)
         else:
             loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -785,6 +811,9 @@ class Trainer:
 
         loss_value = float(loss_value)
         losses.update(loss_value, inputs.size(0))
+        if args.denoise:
+            mask_accuracy.update(mask_metric(mask_logits, mask_targets).item(),
+                                 inputs.size(0))
 
         # update_curriculum
 
@@ -831,13 +860,24 @@ class Trainer:
         # measure elapsed time
         batch_time.update(time.time() - self.end)
         if not args.silent:
-            print('GPU-{0} Epoch {1} [{2}/{3}]\t'
-                  'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
-                  'Data {data_time.val:.2f} ({data_time.avg:.2f})\t'
-                  'Loss {loss.val:.2f} ({loss.avg:.2f})\t'.format(
-                args.gpu_rank or VISIBLE_DEVICES[0],
-                epoch + 1, batch_id + 1, len(train_sampler),
-                batch_time=batch_time, data_time=data_time, loss=losses))
+            if args.denoise:
+                print('GPU-{0} Epoch {1} [{2}/{3}]\t'
+                    'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
+                    'Data {data_time.val:.2f} ({data_time.avg:.2f})\t'
+                    'Loss {loss.val:.2f} ({loss.avg:.2f})\t'
+                    'Loss {mask_accuracy.val:.2f} ({mask_accuracy.avg:.2f})\t'.format(
+                    args.gpu_rank or VISIBLE_DEVICES[0],
+                    epoch + 1, batch_id + 1, len(train_sampler),
+                    batch_time=batch_time, data_time=data_time, loss=losses,
+                    mask_accuracy=mask_accuracy))                
+            else:
+                print('GPU-{0} Epoch {1} [{2}/{3}]\t'
+                    'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
+                    'Data {data_time.val:.2f} ({data_time.avg:.2f})\t'
+                    'Loss {loss.val:.2f} ({loss.avg:.2f})\t'.format(
+                    args.gpu_rank or VISIBLE_DEVICES[0],
+                    epoch + 1, batch_id + 1, len(train_sampler),
+                    batch_time=batch_time, data_time=data_time, loss=losses))
 
         del inputs, targets, input_percentages, input_sizes
         del logits, probs, output_sizes, target_sizes, loss
@@ -1005,10 +1045,12 @@ def train(from_epoch, from_iter, from_checkpoint):
 
 if __name__ == '__main__':
     args = parser.parse_args()
-
+    assert args.use_phonemes + args.denoise < 2
     # упячка, я идиот, убейте меня кто-нибудь
     if args.use_phonemes:
         from data.data_loader_aug import AudioDataLoaderPhoneme as AudioDataLoader
+    elif args.denoise:
+        from data.data_loader_aug import AudioDataLoaderDenoise as AudioDataLoader
     else:
         from data.data_loader_aug import AudioDataLoader
 
@@ -1150,7 +1192,9 @@ if __name__ == '__main__':
                           sp_model=args.sp_model,
                           aug_type=args.aug_type,
                           pytorch_mel=args.pytorch_mel,
-                          pytorch_stft=args.pytorch_stft)
+                          pytorch_stft=args.pytorch_stft,
+                          denoise=args.denoise
+                          )
 
         if args.use_phonemes:
             audio_conf['phoneme_count'] = len(phoneme_map)
@@ -1176,6 +1220,10 @@ if __name__ == '__main__':
     # enorm = ENorm(model.named_parameters(), optimizer, c=1)
 
     criterion = CTCLoss()
+    if args.denoise:
+        mask_criterion = DenoiseLoss()
+        mask_metric = MaskSimilarity(thresholds=[0.05, 0.1, 0.15])
+
     decoder = GreedyDecoder(labels)
     print('Audio conf')
     print(audio_conf)
@@ -1236,5 +1284,9 @@ if __name__ == '__main__':
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
+
+    if args.denoise:
+        mask_accuracy = AverageMeter()
+        
 
     train(start_epoch, start_iter, start_checkpoint)

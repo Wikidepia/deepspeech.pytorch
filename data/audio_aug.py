@@ -266,15 +266,19 @@ class AddNoise:
                                                sr=sr)
                     # noise still should be longer than audio
                     if _noise.shape[0] < wav.shape[0]:
-                        return {'wav': wav, 'sr':sr}
+                        return {'wav': wav, 'sr': sr}
                 else:
-                    gaussian_noise = np.random.normal(0, 1, wav.shape[0]*2)
-                    _noise = gaussian_noise
-                alpha = self.limit * random.uniform(0, 1)
-                pos = random.randint(0, _noise.shape[0]-wav.shape[0])
-                wav = (wav + alpha * _noise[pos:pos+wav.shape[0]])/(1+alpha)
+                    pass
+                    # these augs are too coarse
+                    # gaussian_noise = np.random.normal(0, self.limit, wav.shape[0]*2)
+                    # _noise = gaussian_noise
 
-        return {'wav':wav, 'sr':sr}
+                alpha = self.limit * random.uniform(0, 1)
+                pos = random.randint(0, _noise.shape[0] - wav.shape[0])
+                # no normalization to estimate noise spectrum
+                wav = (wav + alpha * _noise[pos:pos+wav.shape[0]]) # /(1+alpha)
+
+        return {'wav': wav, 'sr': sr}
 
 
 class AddEcho:
