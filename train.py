@@ -789,9 +789,9 @@ class Trainer:
             loss = criterion(logits,
                              targets,
                              output_sizes.cpu(),
-                             target_sizes).to(device) + mask_criterion(mask_logits,
-                                                                       mask_targets).to(device)
-            loss = loss / inputs.size(0)  # average the loss by minibatch
+                             target_sizes).to(device) / inputs.size(0) + mask_criterion(mask_logits,
+                                                                                        mask_targets).to(device)
+            # loss = loss / inputs.size(0)  # average the loss by minibatch
             # loss = loss.to(device)
         else:
             loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
