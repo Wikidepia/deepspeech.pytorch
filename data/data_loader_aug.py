@@ -152,7 +152,7 @@ class SpectrogramParser(AudioParser):
 
         self.pytorch_mel = audio_conf['pytorch_mel']
         self.pytorch_stft = audio_conf['pytorch_stft']
-        self.denoise = audio_conf['denoise']
+        # self.denoise = audio_conf['denoise']
 
         self.n_fft = int(self.sample_rate * (self.window_size + 1e-8))
         self.hop_length = int(self.sample_rate * (self.window_stride + 1e-8))
@@ -235,19 +235,22 @@ class SpectrogramParser(AudioParser):
                         y_noise = self.noise_augs(**{'wav': y,
                                                      'sr': sample_rate})['wav']
                         # https://pytorch.org/docs/stable/nn.html#conv1d
-                        stft_output_len =  (len(y) - (self.n_fft - 1) - 1) / self.hop_length + 1
+                        stft_output_len = int((len(y) + 2 * self.n_fft//2 - (self.n_fft - 1) - 1) / self.hop_length + 1)
+
                         if np.all(y == y_noise):
                             # no noise applied
                             mask = np.zeros((161, stft_output_len))
-                        elif (y - y_noise).sum < 1e-4:
+                        elif (y - y_noise).sum() < 1e-4:
                             # no noise applied
                             # https://pytorch.org/docs/stable/nn.html#conv1d
                             mask = np.zeros((161, stft_output_len))
                         else:
                             # noise applied
-                            mask = self.make_noise_mask(y, y_noise, pad=False)
+                            mask = self.make_noise_mask(y, y_noise)
+                            if mask.shape != (161, stft_output_len):
+                                print(mask.shape, (161, stft_output_len))
                             assert mask.shape == (161, stft_output_len)
-                            assert mask.max() =< 1
+                            assert mask.max() <= 1
                             assert mask.min() >= 0
                     else:
                         y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
@@ -322,7 +325,7 @@ class SpectrogramParser(AudioParser):
                 spect = magnitudes.squeeze(0)
         else:
             D = librosa.stft(y, n_fft=self.n_fft, hop_length=self.hop_length,
-                            win_length=self.win_length, window=self.window)
+                            win_length=self.n_fft, window=self.window)
             # spect, phase = librosa.magphase(D)
             # 3x faster
             spect = np.abs(D)
@@ -416,15 +419,14 @@ class SpectrogramParser(AudioParser):
     def parse_transcript(self, transcript_path):
         raise NotImplementedError
 
-    def make_noise_mask(self, wav, noisy_wav,
-                        pad=False):
+    def make_noise_mask(self, wav, noisy_wav):
         # noise was just
         # multiplied by alpha and added to signal w/o normalization
         # hence it can be just extracted by subtraction
         only_noise = noisy_wav - wav
         n = len(only_noise)
 
-        if pad:
+        if False:
             # we do not use this padding in our standard pre-processing
             only_noise = librosa.util.fix_length(only_noise,
                                                  n + self.n_fft // 2)
@@ -432,9 +434,15 @@ class SpectrogramParser(AudioParser):
                                                 n + self.n_fft // 2)
 
         only_noise_D = librosa.stft(only_noise,
-                                    n_fft=self.n_fft)
+                                    n_fft=self.n_fft,
+                                    hop_length=self.hop_length,
+                                    win_length=self.n_fft,
+                                    window=self.window)
         noisy_D = librosa.stft(noisy_wav,
-                               n_fft=self.n_fft)
+                               n_fft=self.n_fft,
+                               hop_length=self.hop_length,
+                               win_length=self.n_fft,
+                               window=self.window)
 
         noisy_mag, noisy_phase = librosa.magphase(noisy_D)
         only_noise_mag, only_noise_phase = librosa.magphase(only_noise_D)
@@ -443,7 +451,8 @@ class SpectrogramParser(AudioParser):
         noisy_mag_freq_max = noisy_mag / noisy_mag.max(axis=1)[:, None]
 
         # so far no idea how to filter if voice frequences are affected
-        div = np.clip(only_noise_freq_max / noisy_mag_freq_max, 0, 1)
+        soft_mask = np.clip(only_noise_freq_max / (noisy_mag_freq_max + 1.0),
+                            0, 1)
         return soft_mask
 
 
@@ -495,6 +504,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.aug_prob = audio_conf.get('noise_prob')
         self.aug_prob_spect = audio_conf.get('aug_prob_spect')
         self.phoneme_count = audio_conf.get('phoneme_count',0) # backward compatible
+        self.denoise = audio_conf['denoise']
 
         if self.phoneme_count > 0:
             self.phoneme_label_parser = PhonemeLabels(audio_conf.get('phoneme_map',None))
@@ -509,7 +519,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             if self.aug_type == 0:
                 # all augs
                 aug_list = [
-                    AddNoise(limit=1.0, # noise is scaled to 0.2 (0.05)
+                    AddNoise(limit=0.2, # noise is scaled to 0.2 (0.05)
                              prob=self.aug_prob,
                              noise_samples=self.aug_samples),
                     ChangeAudioSpeed(limit=0.15,
@@ -531,7 +541,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 # codec encoding / decoding
                 print('Using new augs')
                 aug_list = [
-                    AddNoise(limit=1.0,
+                    AddNoise(limit=0.2,
                              prob=self.aug_prob,
                              noise_samples=self.aug_samples),
                     AudioDistort(limit=0.05,
@@ -546,17 +556,24 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                     TorchAudioSoxChain(prob=self.aug_prob),
                     # SoxPhoneCodec(prob=self.aug_prob/2)
                 ]
-            # only augs that do not change sound position
             elif self.aug_type == 5:
-                # all augs
+                # preset for denoising
                 aug_list = [
-                    AddNoise(limit=0.5, # noise is scaled to 0.2 (0.05)
+                    AddNoise(limit=1.0, # noise is scaled to 0.2 (0.05)
                              prob=self.aug_prob,
                              noise_samples=self.aug_samples),
+                    ChangeAudioSpeed(limit=0.15,
+                                     prob=self.aug_prob/2,
+                                     sr=audio_conf.get('sample_rate'),
+                                     max_duration=MAX_DURATION_AUG),
                     AudioDistort(limit=0.05, # max distortion clipping 0.05
-                                 prob=self.aug_prob), # /2
+                                 prob=self.aug_prob/2), # /2
+                    Shift(limit=audio_conf.get('sample_rate')*0.5,
+                          prob=self.aug_prob,
+                          sr=audio_conf.get('sample_rate'),
+                          max_duration=MAX_DURATION_AUG), # shift 2 seconds max
                     PitchShift(limit=2, #  half-steps
-                               prob=self.aug_prob)  # /2
+                               prob=self.aug_prob/2)  # /2
                 ]
             if self.denoise:
                 self.noise_augs = OneOf(
@@ -768,10 +785,10 @@ def _collate_fn(batch):
 
 def _collate_fn_denoise(batch):
     def func(p):
-        return p[0].size(1)
-
-    batch = sorted(batch, key=lambda sample: sample[0].size(1), reverse=True)
-    longest_sample = max(batch, key=func)[0]
+        return p[0][0].size(1)
+    # first batch element is (tensor, mask)
+    batch = sorted(batch, key=lambda sample: sample[0][0].size(1), reverse=True)
+    longest_sample = max(batch, key=func)[0][0]
     freq_size = longest_sample.size(0)
     minibatch_size = len(batch)
     max_seqlength = longest_sample.size(1)
@@ -784,7 +801,7 @@ def _collate_fn_denoise(batch):
     for x in range(minibatch_size):
         sample = batch[x]
         tensor = sample[0][0]
-        mask   = sample[1][1]
+        mask   = sample[0][1]
         target = sample[1]
         filenames.append(sample[2])
         seq_length = tensor.size(1)
@@ -848,7 +865,7 @@ class AudioDataLoaderDenoise(DataLoader):
         """
         Creates a data loader for AudioDatasets.
         """
-        super(AudioDataLoader, self).__init__(*args, **kwargs)
+        super(AudioDataLoaderDenoise, self).__init__(*args, **kwargs)
         self.collate_fn = _collate_fn_denoise        
 
 

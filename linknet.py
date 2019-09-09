@@ -17,7 +17,7 @@ class DecoderBlock(nn.Module):
         elif kernel_size == 4:
             conv_stride = 2
 
-        self.decoder = nn.Sequential([
+        self.decoder = nn.Sequential(
             # B, C, L -> B, C/4, L
             nn.Conv1d(in_channels,
                       in_channels // 4,
@@ -40,7 +40,7 @@ class DecoderBlock(nn.Module):
                       padding=1),
             nn.BatchNorm1d(n_filters),
             nonlinearity(inplace=True)
-        ])
+        )
 
     def forward(self, x):
         return self.decoder(x)
@@ -49,11 +49,16 @@ class DecoderBlock(nn.Module):
 class DenoiseLoss(nn.Module):
     def __init__(self):
         super(DenoiseLoss, self).__init__()
+        self.mse_loss = nn.MSELoss(reduction='sum')
+        self.bce_loss = nn.BCEWithLogitsLoss(reduction='sum')
 
     def forward(self, output, target):
-        mse_loss = nn.MSELoss(reduction=None)(output, target)
-        bce_loss = nn.BCEWithLogitsLoss(reduction=None)(output, target)
-        return mse_loss + bce_loss
+        batch_size = target.size(0)
+        sequence_length = target.size(2)
+        # print(output.shape, target.shape)
+        mse_loss = self.mse_loss(output, target)
+        bce_loss = self.bce_loss(output, target)
+        return (mse_loss + bce_loss) / batch_size / sequence_length
 
 
 class MaskSimilarity(nn.Module):

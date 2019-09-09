@@ -708,13 +708,14 @@ class Trainer:
              phoneme_targets,
              phoneme_target_sizes) = data
         elif args.denoise:
-             (inputs,
-              targets,
-              filenames,
-              input_percentages,
-              target_sizes,
-              mask_targets) = data
-              mask_targets = masks.to(device)     
+            (inputs,
+             targets,
+             filenames,
+             input_percentages,
+             target_sizes,
+             mask_targets) = data
+             
+            mask_targets = mask_targets.squeeze(1).to(device)     
         else:
             inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
@@ -788,10 +789,10 @@ class Trainer:
             loss = criterion(logits,
                              targets,
                              output_sizes.cpu(),
-                             target_sizes) + mask_criterion(mask_logits,
-                                                            mask_targets)
+                             target_sizes).to(device) + mask_criterion(mask_logits,
+                                                                       mask_targets).to(device)
             loss = loss / inputs.size(0)  # average the loss by minibatch
-            loss = loss.to(device)
+            # loss = loss.to(device)
         else:
             loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -865,7 +866,7 @@ class Trainer:
                     'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
                     'Data {data_time.val:.2f} ({data_time.avg:.2f})\t'
                     'Loss {loss.val:.2f} ({loss.avg:.2f})\t'
-                    'Loss {mask_accuracy.val:.2f} ({mask_accuracy.avg:.2f})\t'.format(
+                    'Mask {mask_accuracy.val:.2f} ({mask_accuracy.avg:.2f})\t'.format(
                     args.gpu_rank or VISIBLE_DEVICES[0],
                     epoch + 1, batch_id + 1, len(train_sampler),
                     batch_time=batch_time, data_time=data_time, loss=losses,
