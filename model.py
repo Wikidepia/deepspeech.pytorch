@@ -8,6 +8,8 @@ from torch.nn.functional import glu
 from collections import OrderedDict
 from torch.nn.parameter import Parameter
 from switchable_norm import SwitchNorm1d
+from linknet import (DecoderBlock,
+                     DenoiseLoss)
 
 try:
     from sru import SRU
@@ -33,6 +35,7 @@ supported_rnns = {
     'cnn_residual_repeat_sep_bpe': None,
     'cnn_residual_repeat_sep_down8': None,
     'cnn_inv_bottleneck_repeat_sep_down8': None,
+    'cnn_residual_repeat_sep_down8_denoise':None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -102,7 +105,7 @@ class BatchRNN(nn.Module):
         if rnn_type == 'sru':
             self.sru = True
             self.rnn = SRU(input_size, hidden_size,
-                           bidirectional=bidirectional, rescale = True)        
+                           bidirectional=bidirectional, rescale = True)
         else:
             self.sru = False
             self.rnn = rnn_type(input_size=input_size, hidden_size=hidden_size,
@@ -121,7 +124,7 @@ class BatchRNN(nn.Module):
         if not self.sru:
             x = nn.utils.rnn.pack_padded_sequence(x, output_lengths.data.cpu().numpy())
         x, h = self.rnn(x)
-        if not self.sru:        
+        if not self.sru:
             x, _ = nn.utils.rnn.pad_packed_sequence(x, total_length=max_seq_length)
         if self.bidirectional:
             x = x.view(x.size(0), x.size(1), 2, -1).sum(2).view(x.size(0), x.size(1), -1)  # (TxNxH*2) -> (TxNxH) by sum
@@ -324,7 +327,7 @@ class DeepSpeech(nn.Module):
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable':True,
-                    'dilated_blocks': [0]                    
+                    'dilated_blocks': [0]
                 })
             )
             self.fc = nn.Sequential(
@@ -398,7 +401,36 @@ class DeepSpeech(nn.Module):
                 self.fc_phoneme = nn.Sequential(
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
-                )  
+                )
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8_denoise':  # add scale 8
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable': True,
+                    'add_downsample': 4,
+                    'dilated_blocks': [] # no dilation,
+                    'denoise': True
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+            # make checkpoints reverse compatible
+            if hasattr(self, '_phoneme_count'):
+                self.fc_phoneme = nn.Sequential(
+                    nn.Conv1d(in_channels=size,
+                              out_channels=self._phoneme_count, kernel_size=1)
+                )                
         elif self._rnn_type == 'cnn_inv_bottleneck_repeat_sep_down8':  # add inverted bottleneck
             size = rnn_hidden_size
             self.rnns = ResidualRepeatWav2Letter(
@@ -427,7 +459,7 @@ class DeepSpeech(nn.Module):
                 self.fc_phoneme = nn.Sequential(
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
-                )                                        
+                )
         elif self._rnn_type == 'tds':  # repeat middle convs
             # TDS config
             size = rnn_hidden_size
@@ -906,6 +938,8 @@ class ResidualRepeatWav2Letter(nn.Module):
         se_ratio = config.se_ratio
         skip = config.skip
 
+        self.denoise = config.denoise if 'denoise' in config else False
+
         downsampled_blocks = []
         downsampled_subblocks = []
         if 'add_downsample' in config:
@@ -918,7 +952,7 @@ class ResidualRepeatWav2Letter(nn.Module):
                 downsampled_blocks.append(1)
             elif config.add_downsample == 4:
                 # add one more stride after one more block
-                downsampled_blocks.append(1)          
+                downsampled_blocks.append(1)
                 downsampled_blocks.append(2)
 
         separable = config.separable if 'separable' in config else False
@@ -956,7 +990,7 @@ class ResidualRepeatWav2Letter(nn.Module):
             modules.extend([Block(_in=cnn_width, out=cnn_width//4, kernel_size=kernel_size,
                                   padding=padding, stride=1, bnm=bnm, bias=not bnorm, dropout=dropout,
                                   nonlinearity=nn.ReLU(inplace=True),
-                                  se_ratio=0, skip=False, repeat=1)]) # no skips and attention                        
+                                  se_ratio=0, skip=False, repeat=1)]) # no skips and attention
 
         for j in range(0, 3):
             for _ in range(0, repeat_layers//3):
@@ -987,7 +1021,7 @@ class ResidualRepeatWav2Letter(nn.Module):
             modules.extend([Block(_in=cnn_width//4, out=cnn_width, kernel_size=kernel_size,
                                   padding=padding, stride=1, bnm=bnm, bias=not bnorm, dropout=dropout,
                                   nonlinearity=nn.ReLU(inplace=True),
-                                  se_ratio=0, skip=False, repeat=1)]) # no skips and attention                      
+                                  se_ratio=0, skip=False, repeat=1)]) # no skips and attention
         # "epilog"
         modules.extend([Block(_in=cnn_width, out=size, kernel_size=31,
                               padding=15, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
@@ -999,10 +1033,26 @@ class ResidualRepeatWav2Letter(nn.Module):
                                 nonlinearity=nn.ReLU(inplace=True),
                                 se_ratio=0, skip=False, repeat=1)]) # no skips and attention
 
-        self.layers = nn.Sequential(*modules)
+        if self.denoise:
+            assert not inverted_bottleneck
+            assert len(modules) == 1 + 3 * (repeat_layers // 3) + 1 + 1
+            self.conv1 =      nn.Sequential(*modules[                             : 1 + 1 * (repeat_layers // 3)])
+            self.conv2 =      nn.Sequential(*modules[1 + 1 * (repeat_layers // 3) : 1 + 2 * (repeat_layers // 3)])
+            self.conv3 =      nn.Sequential(*modules[1 + 2 * (repeat_layers // 3) : 1 + 3 * (repeat_layers // 3)])
+            self.final_conv = nn.Sequential(*modules[1 + 3 * (repeat_layers // 3) : ])
+        else:
+            self.layers = nn.Sequential(*modules)
 
     def forward(self, x):
-        return self.layers(x)
+        if self.denoise:
+            e1 = x
+            e2 = self.conv1(e1)
+            e3 = self.conv2(e2)
+            e4 = self.conv3(e3)
+            out = self.final_conv(e4)
+            return e1, e2, e3, e4, out
+        else:
+            return self.layers(x)
 
 
 class GLUBlock(nn.Module):
@@ -1230,7 +1280,7 @@ class SeparableRepeatBlock(nn.Module):
         for i in range(0, repeat):
             if repeat == 1:
                 in_ch = _in
-                out_ch = last_out                
+                out_ch = last_out
             else:
                 if i==0:
                     # first conv
@@ -1239,7 +1289,7 @@ class SeparableRepeatBlock(nn.Module):
                 elif i==(repeat - 1):
                     # last conv
                     in_ch = out
-                    out_ch = last_out                
+                    out_ch = last_out
                 else:
                     # mid conv
                     in_ch = out
@@ -1945,7 +1995,7 @@ class SeqLayerNormView(nn.Module):
 	def __init__(self):
 		super(SeqLayerNormView, self).__init__()
 	def forward(self, x):
-		return x.permute(0, 2, 1, 3) 
+		return x.permute(0, 2, 1, 3)
 
 
 # restore the original order
@@ -1960,7 +2010,7 @@ class GaussianDropout(nn.Module):
     def __init__(self, alpha=1.0):
         super(GaussianDropout, self).__init__()
         self.alpha = torch.Tensor([alpha])
-        
+
     def forward(self, x):
         """
         Sample noise   e ~ N(1, alpha)
@@ -1987,7 +2037,7 @@ class MultiSampleFC(nn.Module):
         self.layers = nn.Conv1d(in_channels=in_channels,
                                 out_channels=out_channels,
                                 kernel_size=1)
-        
+
     def forward(self, x):
         """
         Idea similar to https://arxiv.org/abs/1905.09788
@@ -2002,7 +2052,42 @@ class MultiSampleFC(nn.Module):
             out = torch.mean(torch.stack(outputs, dim=0), dim=0)
             return out
         else:
-            return self.layers(x)            
+            return self.layers(x)
+
+
+class LinkNetDenoising(nn.Module):
+    def __init__(self,
+                 num_classes=1,
+                 filters=[161, 768, 768, 768], # am states
+                 nonlinearity=nn.ReLU
+                ):
+        super().__init__()
+
+        self.decoder4 = DecoderBlock(in_channels=filters[3],
+                                     n_filters=filters[2])
+        self.decoder3 = DecoderBlock(in_channels=filters[2],
+                                     n_filters=filters[1])
+        self.decoder2 = DecoderBlock(in_channels=filters[1],
+                                     n_filters=filters[0])
+        self.decoder1 = DecoderBlock(in_channels=filters[0],
+                                     n_filters=filters[0])
+        self.final_layer = nn.Sequential([
+            nn.ConvTranspose1d(filters[0], 32, 3, stride=2),
+            nonlinearity(inplace=True),
+            nn.Conv1d(32, 32, 3),
+            nonlinearity(inplace=True),
+            nn.Conv1d(32, num_classes, 2, padding=1)
+        ])
+
+    def forward(self,
+                e1, e2, e3, e4):
+
+        d4 = self.decoder4(e4) + e3
+        d3 = self.decoder3(d4) + e2
+        d2 = self.decoder2(d3) + e1
+        d1 = self.decoder1(d2)
+        return self.final_layer(d1)
+
 
 def main():
     import os.path
