@@ -1234,10 +1234,11 @@ if __name__ == '__main__':
                                        curriculum_filepath=args.curriculum)
     test_audio_conf = {**audio_conf,
                        'noise_prob': 0,
-                       'aug_prob_8khz':0,
-                       'aug_prob_spect':0,
-                       'phoneme_count':0,
-                       'phoneme_map':None}
+                       'aug_prob_8khz': 0,
+                       'aug_prob_spect': 0,
+                       'phoneme_count': 0,
+                       'phoneme_map': None,
+                       'denoise': False}
 
     print('Test audio conf')
     print(test_audio_conf)
