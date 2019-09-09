@@ -232,8 +232,11 @@ class SpectrogramParser(AudioParser):
                                                                        tempo_range=TEMPOS[tempo_id][1],
                                                                        transforms=self.augs)
                         # apply noise
-                        y_noise = self.noise_augs(**{'wav': y,
-                                                     'sr': sample_rate})['wav']
+                        if self.aug_prob > 0:
+                            y_noise = self.noise_augs(**{'wav': y,
+                                                         'sr': sample_rate})['wav']
+                        else:
+                            y_noise = y
                         # https://pytorch.org/docs/stable/nn.html#conv1d
                         stft_output_len = int((len(y) + 2 * self.n_fft//2 - (self.n_fft - 1) - 1) / self.hop_length + 1)
 

@@ -455,6 +455,13 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                  target_sizes,
                  phoneme_targets,
                  phoneme_target_sizes) = data
+            elif args.denoise:
+                (inputs,
+                 targets,
+                 filenames,
+                 input_percentages,
+                 target_sizes,
+                 mask_targets) = data                
             else:
                 inputs, targets, filenames, input_percentages, target_sizes = data
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
@@ -577,6 +584,13 @@ def calculate_trainval_quality_metrics(checkpoint,
                  target_sizes,
                  phoneme_targets,
                  phoneme_target_sizes) = data
+            elif args.denoise:
+                (inputs,
+                 targets,
+                 filenames,
+                 input_percentages,
+                 target_sizes,
+                 mask_targets) = data                   
             else:
                 inputs, targets, filenames, input_percentages, target_sizes = data
 
@@ -1234,11 +1248,10 @@ if __name__ == '__main__':
                                        curriculum_filepath=args.curriculum)
     test_audio_conf = {**audio_conf,
                        'noise_prob': 0,
-                       'aug_prob_8khz': 0,
-                       'aug_prob_spect': 0,
-                       'phoneme_count': 0,
-                       'phoneme_map': None,
-                       'denoise': False}
+                       'aug_prob_8khz':0,
+                       'aug_prob_spect':0,
+                       'phoneme_count':0,
+                       'phoneme_map':None}
 
     print('Test audio conf')
     print(test_audio_conf)
