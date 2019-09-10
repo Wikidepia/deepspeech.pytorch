@@ -800,12 +800,16 @@ class Trainer:
             loss = loss / inputs.size(0)  # average the loss by minibatch
             loss = loss.to(device)
         elif args.denoise:
-            loss = criterion(logits,
-                             targets,
-                             output_sizes.cpu(),
-                             target_sizes).to(device) / inputs.size(0) + mask_criterion(mask_logits,
-                                                                                        mask_targets).to(device)
-            # loss = loss / inputs.size(0)  # average the loss by minibatch
+            if False:
+                ctc_loss = criterion(logits,
+                                targets,
+                                output_sizes.cpu(),
+                                target_sizes).to(device) / inputs.size(0)  # average the loss by minibatch
+            else:
+                ctc_loss = 0
+            mask_loss = mask_criterion(mask_logits, mask_targets).to(device)
+            loss = ctc_loss + mask_loss
+            # loss = loss / inputs.size(0)  
             # loss = loss.to(device)
         else:
             loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
@@ -829,6 +833,10 @@ class Trainer:
         if args.denoise:
             mask_accuracy.update(mask_metric(mask_logits, mask_targets).item(),
                                  inputs.size(0))
+            mask_losses.update(mask_loss.item(),
+                               inputs.size(0))
+            ctc_losses.update(ctc_loss, # .item()
+                              inputs.size(0))                                                                  
 
         # update_curriculum
 
@@ -837,15 +845,15 @@ class Trainer:
             optimizer.zero_grad()
             loss.backward()
 
+            # try just lr reduction
+            # instead of gradient clipping
+            lr_clipping = False
+
             # spare time by doing clipping
             # only once each N epochs
             if args.max_norm > 0:
                 if epoch < args.norm_warmup_epochs:
                     # warmup, always do clipping
-
-                    # try just lr reduction
-                    # instead of gradient clipping
-                    lr_clipping = False
 
                     if lr_clipping:
                         clip_coef = calc_grad_norm(model.parameters(),
@@ -880,10 +888,13 @@ class Trainer:
                     'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
                     'Data {data_time.val:.2f} ({data_time.avg:.2f})\t'
                     'Loss {loss.val:.2f} ({loss.avg:.2f})\t'
+                    'CTC Loss {ctc_losses.val:.2f} ({ctc_losses.avg:.2f})\t'
+                    'Mask Loss {mask_losses.val:.2f} ({mask_losses.avg:.2f})\t'
                     'Mask {mask_accuracy.val:.2f} ({mask_accuracy.avg:.2f})\t'.format(
                     args.gpu_rank or VISIBLE_DEVICES[0],
                     epoch + 1, batch_id + 1, len(train_sampler),
                     batch_time=batch_time, data_time=data_time, loss=losses,
+                    mask_losses=mask_losses, ctc_losses=ctc_losses,
                     mask_accuracy=mask_accuracy))                
             else:
                 print('GPU-{0} Epoch {1} [{2}/{3}]\t'
@@ -1127,12 +1138,20 @@ if __name__ == '__main__':
             audio_conf['phoneme_map'] = phoneme_map
         """
 
-        if args.use_phonemes and package.get('phoneme_count',0)==0:
+        if args.use_phonemes and package.get('phoneme_count', 0) == 0:
             model = DeepSpeech.add_phonemes_to_model(model,
                                                      len(phoneme_map))
             audio_conf['phoneme_count'] = len(phoneme_map)
             audio_conf['phoneme_map'] = phoneme_map
             model.phoneme_count = len(phoneme_map)
+
+        if args.denoise and package.get('denoise', False) == False:
+            model = DeepSpeech.add_denoising_to_model(model)
+            print('Model transformed to a denoising one')
+            audio_conf['denoise'] = True
+            audio_conf['noise_prob'] = args.noise_prob
+            audio_conf['aug_type'] = args.aug_type
+            print('Changed audio conf params')
 
         # REMOVE LATER
         # audio_conf['noise_dir'] = '../data/augs/*.wav'
@@ -1151,7 +1170,9 @@ if __name__ == '__main__':
                 ))
             except:
                 print('Just changing the LR in the optimizer')
-                set_lr(package['optim_dict']['param_groups'][0]['lr'])
+                # set_lr(package['optim_dict']['param_groups'][0]['lr'])
+                set_lr(args.lr)
+
             start_epoch = int(package.get('epoch', 1)) - 1  # Index start at 0 for training
             start_iter = package.get('iteration', None)
             start_checkpoint = package.get('checkpoint', 0) or 0
@@ -1302,6 +1323,8 @@ if __name__ == '__main__':
 
     if args.denoise:
         mask_accuracy = AverageMeter()
+        mask_losses = AverageMeter()
+        ctc_losses = AverageMeter()
         
 
     train(start_epoch, start_iter, start_checkpoint)

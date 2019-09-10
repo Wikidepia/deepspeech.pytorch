@@ -750,6 +750,30 @@ class DeepSpeech(nn.Module):
         return model
 
     @staticmethod
+    def add_denoising_to_model(model):
+        '''Turn a pre-trained model into a model with denoising layer
+        '''
+        assert model._rnn_type == 'cnn_residual_repeat_sep_down8'
+        model._rnn_type = 'cnn_residual_repeat_sep_down8_denoise'
+        repeat_layers = 12
+        cnn_width = 768
+        model.rnns.encoder = nn.ModuleDict({
+            'conv1':      nn.Sequential(*model.rnns.layers[                                 : 1 + 1 * (repeat_layers // 3) + 0]),
+            'conv2':      nn.Sequential(*model.rnns.layers[1 + 1 * (repeat_layers // 3)     : 1 + 2 * (repeat_layers // 3) + 1]),
+            'conv3':      nn.Sequential(*model.rnns.layers[1 + 2 * (repeat_layers // 3) + 1 : 1 + 3 * (repeat_layers // 3) + 2]),
+            'final_conv': nn.Sequential(*model.rnns.layers[1 + 3 * (repeat_layers // 3) + 2 : ]),
+        })
+        model.rnns.denoise = LinkNetDenoising(filters=[161]+[cnn_width]*3)
+        del model.rnns.layers
+
+        for block in [model.rnns.encoder]:
+            for p in block.parameters():
+                p.requires_grad = False
+        print('Gradients disabled for the encoder')
+
+        return model        
+
+    @staticmethod
     def serialize(model, optimizer=None, epoch=None, iteration=None, loss_results=None, checkpoint=None,
                   cer_results=None, wer_results=None, avg_loss=None, meta=None,
                   checkpoint_cer_results=None, checkpoint_wer_results=None, checkpoint_loss_results=None,
@@ -1055,8 +1079,7 @@ class ResidualRepeatWav2Letter(nn.Module):
                 'conv3':      nn.Sequential(*modules[1 + 2 * (repeat_layers // 3) + 1 : 1 + 3 * (repeat_layers // 3) + 2]),
                 'final_conv': nn.Sequential(*modules[1 + 3 * (repeat_layers // 3) + 2 : ]),
             })
-            self.denoise    = LinkNetDenoising(num_classes=1,
-                                               filters=[161]+[cnn_width]*3)
+            self.denoise    = LinkNetDenoising(filters=[161]+[cnn_width]*3)
         else:
             self.layers = nn.Sequential(*modules)
 
@@ -2074,7 +2097,6 @@ class MultiSampleFC(nn.Module):
 
 class LinkNetDenoising(nn.Module):
     def __init__(self,
-                 num_classes=161,
                  filters=[161, 768, 768, 768], # am states
                  nonlinearity=nn.ReLU
                 ):

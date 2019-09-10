@@ -150,8 +150,8 @@ class SpectrogramParser(AudioParser):
         self.cache_path = cache_path
         self.noiseInjector = None
 
-        self.pytorch_mel = audio_conf['pytorch_mel']
-        self.pytorch_stft = audio_conf['pytorch_stft']
+        self.pytorch_mel = audio_conf.get('pytorch_mel', False)
+        self.pytorch_stft = audio_conf.get('pytorch_stft', False)
         # self.denoise = audio_conf['denoise']
 
         self.n_fft = int(self.sample_rate * (self.window_size + 1e-8))
@@ -227,34 +227,8 @@ class SpectrogramParser(AudioParser):
                 if self.aug_prob > -1: # always use the pipeline with augs
                     if self.denoise:
                         # apply the non-noise augs
-                        y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
-                                                                       channel=self.channel,
-                                                                       tempo_range=TEMPOS[tempo_id][1],
-                                                                       transforms=self.augs)
-                        # apply noise
-                        if self.aug_prob > 0:
-                            y_noise = self.noise_augs(**{'wav': y,
-                                                         'sr': sample_rate})['wav']
-                        else:
-                            y_noise = y
-                        # https://pytorch.org/docs/stable/nn.html#conv1d
-                        stft_output_len = int((len(y) + 2 * self.n_fft//2 - (self.n_fft - 1) - 1) / self.hop_length + 1)
-
-                        if np.all(y == y_noise):
-                            # no noise applied
-                            mask = np.zeros((161, stft_output_len))
-                        elif (y - y_noise).sum() < 1e-4:
-                            # no noise applied
-                            # https://pytorch.org/docs/stable/nn.html#conv1d
-                            mask = np.zeros((161, stft_output_len))
-                        else:
-                            # noise applied
-                            mask = self.make_noise_mask(y, y_noise)
-                            if mask.shape != (161, stft_output_len):
-                                print(mask.shape, (161, stft_output_len))
-                            assert mask.shape == (161, stft_output_len)
-                            assert mask.max() <= 1
-                            assert mask.min() >= 0
+                        y, mask, sample_rate = self.make_denoise_tensors(audio_path,
+                                                                         TEMPOS[tempo_id][1])
                     else:
                         y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
                                                                        channel=self.channel,
@@ -299,7 +273,7 @@ class SpectrogramParser(AudioParser):
             # unify and check format
             mask = torch.FloatTensor(mask)
             assert spect.size() == mask.size()
-            return (spect, mask)
+            return (spect, mask, y)
         else:
             return spect
 
@@ -429,6 +403,8 @@ class SpectrogramParser(AudioParser):
         only_noise = noisy_wav - wav
         n = len(only_noise)
 
+        eps = 1e-4
+
         if False:
             # we do not use this padding in our standard pre-processing
             only_noise = librosa.util.fix_length(only_noise,
@@ -454,9 +430,42 @@ class SpectrogramParser(AudioParser):
         noisy_mag_freq_max = noisy_mag / noisy_mag.max(axis=1)[:, None]
 
         # so far no idea how to filter if voice frequences are affected
-        soft_mask = np.clip(only_noise_freq_max / (noisy_mag_freq_max + 1.0),
+        soft_mask = np.clip(only_noise_freq_max / (noisy_mag_freq_max + eps),
                             0, 1)
         return soft_mask
+
+    def make_denoise_tensors(self, audio_path, tempo_id):
+        y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
+                                                       channel=self.channel,
+                                                       tempo_range=tempo_id,
+                                                       transforms=self.augs)
+
+        # https://pytorch.org/docs/stable/nn.html#conv1d
+        stft_output_len = int((len(y) + 2 * self.n_fft//2 - (self.n_fft - 1) - 1) / self.hop_length + 1)
+
+        # apply noise
+        if self.aug_prob > 0:
+            y_noise = self.noise_augs(**{'wav': y,
+                                         'sr': sample_rate})['wav']
+        else:
+            # no noise applied
+            mask = np.zeros((161, stft_output_len))
+            return y, mask, sample_rate
+
+        if np.all(y == y_noise):
+            # no noise applied
+            mask = np.zeros((161, stft_output_len))
+        else:
+            # noise applied
+            mask = self.make_noise_mask(y, y_noise)
+            if np.isnan(mask).any():
+                print('Mask failsafe triggered')
+                mask = np.zeros((161, stft_output_len))
+            assert mask.shape == (161, stft_output_len)
+            assert mask.max() <= 1
+            assert mask.min() >= 0
+
+        return y_noise, mask, sample_rate
 
 
 TS_CACHE = {}
@@ -507,7 +516,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.aug_prob = audio_conf.get('noise_prob')
         self.aug_prob_spect = audio_conf.get('aug_prob_spect')
         self.phoneme_count = audio_conf.get('phoneme_count',0) # backward compatible
-        self.denoise = audio_conf['denoise']
+        self.denoise = audio_conf.get('denoise', False)
 
         if self.phoneme_count > 0:
             self.phoneme_label_parser = PhonemeLabels(audio_conf.get('phoneme_map',None))
@@ -562,7 +571,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             elif self.aug_type == 5:
                 # preset for denoising
                 aug_list = [
-                    AddNoise(limit=1.0, # noise is scaled to 0.2 (0.05)
+                    AddNoise(limit=0.5, # noise is scaled to 0.2 (0.05)
                              prob=self.aug_prob,
                              noise_samples=self.aug_samples),
                     ChangeAudioSpeed(limit=0.15,
@@ -662,7 +671,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             return spect, reference, audio_path, phoneme_reference
         if self.denoise:
             # (spect, mask)
-            assert len(spect) == 2
+            assert len(spect) == 3
         return spect, reference, audio_path
 
     def get_curriculum_info(self, item):
@@ -869,7 +878,7 @@ class AudioDataLoaderDenoise(DataLoader):
         Creates a data loader for AudioDatasets.
         """
         super(AudioDataLoaderDenoise, self).__init__(*args, **kwargs)
-        self.collate_fn = _collate_fn_denoise        
+        self.collate_fn = _collate_fn_denoise
 
 
 class AudioDataLoaderPhoneme(DataLoader):
