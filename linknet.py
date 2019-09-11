@@ -101,6 +101,13 @@ class TilingBlock(nn.Module):
                 .view(*view_tup)\
                 .transpose(*reversed(transpose_axes))
 
+    def extra_repr(self):
+        # (Optional)Set the extra information about this module. You can test
+        # it by printing an object of this class.
+        return 'repeats={}'.format(
+            self.repeats
+        )
+
     def forward(self,
                 spect,
                 feature_maps):
@@ -117,22 +124,23 @@ class TilingBlock(nn.Module):
 
         repeat_fms = []
         for fm, repeat in zip(feature_maps, self.repeats):
-            repeat_fms.append(self.sound_tile(fm,
-                                              n_tile=repeat))
+            t_fm = self.sound_tile(fm,
+                                   n_tile=repeat)            
+            repeat_fms.append(t_fm)
 
         # check that dimensions match
         for i in range(len(repeat_fms)):
-            if repeat_fms[i].size() == spect.size():
+            if repeat_fms[i].size(2) == spect.size(2):
                 continue
-
             length_diff = spect.size(2) - repeat_fms[i].size(2)
+            # print(length_diff)
             if length_diff < 0:
-                repeat_fms[i] = repeat_fms[i][:,:,spect.size(2)]
+                repeat_fms[i] = repeat_fms[i][:, :, :spect.size(2)]
+                # print('Cut', repeat_fms[i].size())
             else:
                 pad = torch.nn.ReplicationPad1d((length_diff//2,
-                                                 length_diff - length_diff//2))
+                                                 length_diff))
                 repeat_fms[i] = pad(repeat_fms[i])
-
-            assert repeat_fms[i].size() == spect.size()
+                # print('Pad', repeat_fms[i].size())
 
         return repeat_fms

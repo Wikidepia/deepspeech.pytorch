@@ -763,7 +763,11 @@ class DeepSpeech(nn.Module):
             'conv3':      nn.Sequential(*model.rnns.layers[1 + 2 * (repeat_layers // 3) + 1 : 1 + 3 * (repeat_layers // 3) + 2]),
             'final_conv': nn.Sequential(*model.rnns.layers[1 + 3 * (repeat_layers // 3) + 2 : ]),
         })
-        model.rnns.denoise = LinkNetDenoising(filters=[161]+[cnn_width]*3)
+        model.rnns.denoise = NaiveDenoising(filters=[161]+[cnn_width]*3,
+                                             denoise_width=256,
+                                             denoise_depth=4,
+                                             dropout=0.1,
+                                             kernel_size=7)
         del model.rnns.layers
 
         for block in [model.rnns.encoder]:
@@ -2151,13 +2155,13 @@ class NaiveDenoising(nn.Module):
         # main convs
         for _ in range(0, denoise_depth):
             modules.extend(
-                [*self.block(in_channels=cnn_width, out_channels=cnn_width, kernel_size=kernel_size,
+                [*self.block(in_channels=denoise_width, out_channels=denoise_width, kernel_size=kernel_size,
                              padding=padding, bnorm=bnorm, bias=not bnorm, dropout=dropout)]
             )
         self.conv = nn.Sequential(*modules)
         # shared "classifier"
         self.fc = nn.Sequential(
-            nn.Conv1d(in_channels=cnn_width,
+            nn.Conv1d(in_channels=denoise_width,
                       out_channels=filters[0],
                       kernel_size=1)
         )
@@ -2179,21 +2183,16 @@ class NaiveDenoising(nn.Module):
     def forward(self,
                 e1, e2, e3, e4):
 
-        batch.size = e1.size(0)
-        seq_len = e1.size(2)
-
         (e2_tiled,
          e3_tiled,
          e4_tiled) = self.tiling(e1,
                                  (e2, e3, e4))
 
-        x = torch.stack([e1,
-                         e2_tiled,
-                         e3_tiled,
-                         e4_tiled], dim=3).view(batch,
-                                                -1,
-                                                seq_len)
-        x = self.conv(s)
+        x = torch.cat([e1,
+                       e2_tiled,
+                       e3_tiled,
+                       e4_tiled], dim=1)
+        x = self.conv(x)
         out = self.fc(x)
         return out
 
