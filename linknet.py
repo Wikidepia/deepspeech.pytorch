@@ -80,3 +80,59 @@ class MaskSimilarity(nn.Module):
             metrics.append(similar / total)
 
         return sum(metrics) / len(metrics)
+
+
+class TilingBlock(nn.Module):
+    def __init__(self,
+                 repeats=[2, 4, 8]):
+        super().__init__()
+        self.repeats = repeats
+
+    @staticmethod
+    def sound_tile(x,
+                   n_tile=2,
+                   batch_dim=0,
+                   channel_dim=1):
+        repeat_tup = (1, 1, n_tile)
+        view_tup = (x.size(batch_dim), -1, x.size(channel_dim))
+        transpose_axes = (1, 2)
+        return x.transpose(*transpose_axes)\
+                .repeat(*repeat_tup)\
+                .view(*view_tup)\
+                .transpose(*reversed(transpose_axes))
+
+    def forward(self,
+                spect,
+                feature_maps):
+        """
+        ab
+        cdef
+        =>
+        aabb
+        cdef
+        """
+        assert len(feature_maps) == len(self.repeats)
+        for fm in feature_maps:
+            assert fm.size(0) == spect.size(0)
+
+        repeat_fms = []
+        for fm, repeat in zip(feature_maps, self.repeats):
+            repeat_fms.append(self.sound_tile(fm,
+                                              n_tile=repeat))
+
+        # check that dimensions match
+        for i in range(len(repeat_fms)):
+            if repeat_fms[i].size() == spect.size():
+                continue
+
+            length_diff = spect.size(2) - repeat_fms[i].size(2)
+            if length_diff < 0:
+                repeat_fms[i] = repeat_fms[i][:,:,spect.size(2)]
+            else:
+                pad = torch.nn.ReplicationPad1d((length_diff//2,
+                                                 length_diff - length_diff//2))
+                repeat_fms[i] = pad(repeat_fms[i])
+
+            assert repeat_fms[i].size() == spect.size()
+
+        return repeat_fms

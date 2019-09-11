@@ -8,7 +8,7 @@ from torch.nn.functional import glu
 from collections import OrderedDict
 from torch.nn.parameter import Parameter
 from switchable_norm import SwitchNorm1d
-from linknet import DecoderBlock
+from linknet import (DecoderBlock, TilingBlock)
 
 try:
     from sru import SRU
@@ -429,7 +429,7 @@ class DeepSpeech(nn.Module):
                 self.fc_phoneme = nn.Sequential(
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
-                )                
+                )
         elif self._rnn_type == 'cnn_inv_bottleneck_repeat_sep_down8':  # add inverted bottleneck
             size = rnn_hidden_size
             self.rnns = ResidualRepeatWav2Letter(
@@ -633,7 +633,7 @@ class DeepSpeech(nn.Module):
             x, denoise_mask = self.rnns(x)
             # print(denoise_mask.size())
             x = self.fc(x)
-            x = x.transpose(1, 2).transpose(0, 1).contiguous()            
+            x = x.transpose(1, 2).transpose(0, 1).contiguous()
         else:
             # x = self.dropout1(x)
             x, _ = self.conv(x, output_lengths)
@@ -771,7 +771,7 @@ class DeepSpeech(nn.Module):
                 p.requires_grad = False
         print('Gradients disabled for the encoder')
 
-        return model        
+        return model
 
     @staticmethod
     def serialize(model, optimizer=None, epoch=None, iteration=None, loss_results=None, checkpoint=None,
@@ -1079,7 +1079,11 @@ class ResidualRepeatWav2Letter(nn.Module):
                 'conv3':      nn.Sequential(*modules[1 + 2 * (repeat_layers // 3) + 1 : 1 + 3 * (repeat_layers // 3) + 2]),
                 'final_conv': nn.Sequential(*modules[1 + 3 * (repeat_layers // 3) + 2 : ]),
             })
-            self.denoise    = LinkNetDenoising(filters=[161]+[cnn_width]*3)
+            self.denoise    = NaiveDenoising(filters=[161]+[cnn_width]*3,
+                                             denoise_width=256,
+                                             denoise_depth=4,
+                                             dropout=0.1,
+                                             kernel_size=7)
         else:
             self.layers = nn.Sequential(*modules)
 
@@ -2116,12 +2120,81 @@ class LinkNetDenoising(nn.Module):
 
     def forward(self,
                 e1, e2, e3, e4):
-        # make proper paddings here 
+        # make proper paddings here
         d3 = self.decoder3(e4)[:,:,:e3.size(2)] + e3
         d2 = self.decoder2(d3)[:,:,:e2.size(2)] + e2
         d1 = self.decoder1(d2)[:,:,:e1.size(2)] + e1
         out = self.final_layer(d1)
         # print(e1.size(), e2.size(), e3.size(), e4.size(), out.size())
+        return out
+
+
+class NaiveDenoising(nn.Module):
+    def __init__(self,
+                 filters=[161, 768, 768, 768], # am states
+                 denoise_width=256,
+                 denoise_depth=4,
+                 dropout=0.1,
+                 kernel_size=7
+                ):
+        super().__init__()
+
+        self.tiling = TilingBlock(repeats=[2, 4, 8])
+
+        bnorm = True
+        input_shape = sum(filters)
+        padding = kernel_size // 2
+
+        # "prolog"
+        modules = self.block(in_channels=input_shape, out_channels=denoise_width, kernel_size=kernel_size,
+                             padding=padding, bnorm=bnorm, bias=not bnorm, dropout=dropout)
+        # main convs
+        for _ in range(0, denoise_depth):
+            modules.extend(
+                [*self.block(in_channels=cnn_width, out_channels=cnn_width, kernel_size=kernel_size,
+                             padding=padding, bnorm=bnorm, bias=not bnorm, dropout=dropout)]
+            )
+        self.conv = nn.Sequential(*modules)
+        # shared "classifier"
+        self.fc = nn.Sequential(
+            nn.Conv1d(in_channels=cnn_width,
+                      out_channels=filters[0],
+                      kernel_size=1)
+        )
+
+    @staticmethod
+    def block(in_channels, out_channels, kernel_size,
+               padding=0, stride=1, bnorm=False, bias=True,
+               dropout=0):
+
+        res = [nn.Conv1d(in_channels=in_channels, out_channels=out_channels,
+                         kernel_size=kernel_size, padding=padding,
+                         stride=stride, bias=bias)]
+
+        res.append(nn.BatchNorm1d(out_channels))
+        res.append(nn.ReLU(inplace=True))
+        res.append(nn.Dropout(dropout))
+        return res
+
+    def forward(self,
+                e1, e2, e3, e4):
+
+        batch.size = e1.size(0)
+        seq_len = e1.size(2)
+
+        (e2_tiled,
+         e3_tiled,
+         e4_tiled) = self.tiling(e1,
+                                 (e2, e3, e4))
+
+        x = torch.stack([e1,
+                         e2_tiled,
+                         e3_tiled,
+                         e4_tiled], dim=3).view(batch,
+                                                -1,
+                                                seq_len)
+        x = self.conv(s)
+        out = self.fc(x)
         return out
 
 
