@@ -763,11 +763,7 @@ class DeepSpeech(nn.Module):
             'conv3':      nn.Sequential(*model.rnns.layers[1 + 2 * (repeat_layers // 3) + 1 : 1 + 3 * (repeat_layers // 3) + 2]),
             'final_conv': nn.Sequential(*model.rnns.layers[1 + 3 * (repeat_layers // 3) + 2 : ]),
         })
-        model.rnns.denoise = NaiveDenoising(filters=[161]+[cnn_width]*3,
-                                             denoise_width=256,
-                                             denoise_depth=4,
-                                             dropout=0.1,
-                                             kernel_size=7)
+        model.rnns.denoise = ShortLinkNetDenoising(filters=[161]+[cnn_width]*1)
         del model.rnns.layers
 
         for block in [model.rnns.encoder]:
@@ -1083,22 +1079,27 @@ class ResidualRepeatWav2Letter(nn.Module):
                 'conv3':      nn.Sequential(*modules[1 + 2 * (repeat_layers // 3) + 1 : 1 + 3 * (repeat_layers // 3) + 2]),
                 'final_conv': nn.Sequential(*modules[1 + 3 * (repeat_layers // 3) + 2 : ]),
             })
-            self.denoise    = NaiveDenoising(filters=[161]+[cnn_width]*3,
-                                             denoise_width=256,
-                                             denoise_depth=4,
-                                             dropout=0.1,
-                                             kernel_size=7)
+            self.denoise    = ShortLinkNetDenoising(filters=[161]+[cnn_width]*1)
         else:
             self.layers = nn.Sequential(*modules)
 
     def forward(self, x):
         if self.denoise:
             e1 = x
+            
+            # incur some additional overhead here
             e2 = self.encoder['conv1'](e1)
-            e3 = self.encoder['conv2'](e2)
-            e4 = self.encoder['conv3'](e3)
-            return (self.encoder['final_conv'](e4),
-                    self.denoise(e1, e2, e3, e4))
+            denoise_mask = self.denoise(e1, e2)
+            assert e1.size() == denoise_mask.size()
+
+            # plain sigmoid gate
+            e1_denoised = e1 * torch.sigmoid(denoise_mask)
+            e2_denoised = self.encoder['conv1'](e1_denoised)
+            e3_denoised = self.encoder['conv2'](e2_denoised)
+            e4_denoised = self.encoder['conv3'](e3_denoised)
+            
+            return (self.encoder['final_conv'](e4_denoised),
+                    denoise_mask)
         else:
             return self.layers(x)
 
@@ -2136,7 +2137,7 @@ class LinkNetDenoising(nn.Module):
 class NaiveDenoising(nn.Module):
     def __init__(self,
                  filters=[161, 768, 768, 768], # am states
-                 denoise_width=256,
+                 denoise_width=768,
                  denoise_depth=4,
                  dropout=0.1,
                  kernel_size=7
@@ -2146,19 +2147,31 @@ class NaiveDenoising(nn.Module):
         self.tiling = TilingBlock(repeats=[2, 4, 8])
 
         bnorm = True
-        input_shape = sum(filters)
+        input_shape = filters[0] * 4
         padding = kernel_size // 2
 
+        block = SeparableRepeatBlock
         # "prolog"
-        modules = self.block(in_channels=input_shape, out_channels=denoise_width, kernel_size=kernel_size,
-                             padding=padding, bnorm=bnorm, bias=not bnorm, dropout=dropout)
+        modules = [block(_in=input_shape, out=denoise_width, kernel_size=kernel_size,
+                         padding=padding, dropout=dropout)]
+
         # main convs
         for _ in range(0, denoise_depth):
             modules.extend(
-                [*self.block(in_channels=denoise_width, out_channels=denoise_width, kernel_size=kernel_size,
-                             padding=padding, bnorm=bnorm, bias=not bnorm, dropout=dropout)]
+                [block(_in=denoise_width, out=denoise_width, kernel_size=kernel_size,
+                       padding=padding, dropout=dropout, se_ratio=0.2)]
             )
         self.conv = nn.Sequential(*modules)
+
+        self.compress_2 = nn.Sequential(*self.block(filters[1], filters[0], 1,
+                                        padding=0, stride=1, bnorm=True,
+                                        dropout=dropout))
+        self.compress_3 = nn.Sequential(*self.block(filters[2], filters[0], 1,
+                                        padding=0, stride=1, bnorm=True,
+                                        dropout=dropout))
+        self.compress_4 = nn.Sequential(*self.block(filters[3], filters[0], 1,
+                                        padding=0, stride=1, bnorm=True,
+                                        dropout=dropout))
         # shared "classifier"
         self.fc = nn.Sequential(
             nn.Conv1d(in_channels=denoise_width,
@@ -2186,14 +2199,38 @@ class NaiveDenoising(nn.Module):
         (e2_tiled,
          e3_tiled,
          e4_tiled) = self.tiling(e1,
-                                 (e2, e3, e4))
-
+                                 (self.compress_2(e2),
+                                  self.compress_3(e3), 
+                                  self.compress_4(e4)))
         x = torch.cat([e1,
                        e2_tiled,
                        e3_tiled,
                        e4_tiled], dim=1)
         x = self.conv(x)
         out = self.fc(x)
+        return out
+
+
+class ShortLinkNetDenoising(nn.Module):
+    def __init__(self,
+                 filters=[161, 768], # am states
+                 nonlinearity=nn.ReLU
+                ):
+        super().__init__()
+
+        self.decoder1 = DecoderBlock(in_channels=filters[1],
+                                     n_filters=filters[0])
+        self.final_layer = nn.Sequential(
+            Conv1dSamePadding(filters[0], filters[0], 3),
+            nonlinearity(inplace=True),
+            Conv1dSamePadding(filters[0], filters[0], 2)
+        )
+
+    def forward(self,
+                e1, e2):
+        # make proper paddings here
+        d1 = self.decoder1(e2)[:,:,:e1.size(2)] + e1
+        out = self.final_layer(d1)
         return out
 
 

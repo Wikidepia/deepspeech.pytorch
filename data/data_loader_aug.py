@@ -271,7 +271,7 @@ class SpectrogramParser(AudioParser):
 
         if self.denoise:
             # unify and check format
-            mask = torch.FloatTensor(mask)
+            # mask = torch.FloatTensor(mask)
             assert spect.size() == mask.size()
             return (spect, mask, y)
         else:
@@ -434,7 +434,7 @@ class SpectrogramParser(AudioParser):
                             0, 1)
         return soft_mask
 
-    def make_denoise_tensors(self, audio_path, tempo_id):
+    def _make_denoise_tensors(self, audio_path, tempo_id):
         y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
                                                        channel=self.channel,
                                                        tempo_range=tempo_id,
@@ -467,6 +467,55 @@ class SpectrogramParser(AudioParser):
 
         return y_noise, mask, sample_rate
 
+    def make_denoise_tensors(self, audio_path, tempo_id,
+                             normalize_spect=True):
+
+        """Try predicting just an original STFT mask / values
+        """
+        y, sample_rate = load_randomly_augmented_audio(audio_path, self.sample_rate,
+                                                       channel=self.channel,
+                                                       tempo_range=tempo_id,
+                                                       transforms=self.augs)
+        if self.aug_prob > 0:
+            y_noise = self.noise_augs(**{'wav': y,
+                                         'sr': sample_rate})['wav']
+        else:
+            y_noise = y
+
+        or_spect = self.audio_to_stft(y, sample_rate)
+        if normalize_spect:
+            if True:
+                eps = 1e-4
+                or_spect = or_spect.numpy()
+                or_spect *= 1 / (eps + self.spect_rolling_max_normalize(or_spect))
+                or_spect = torch.FloatTensor(or_spect)
+            elif False:
+                # normalize all frequencies the same
+                or_spect *= 1 / or_spect.max()
+            else:
+                # normalize each frequency separately
+                or_spect_max, _ = or_spect.max(dim=1)
+                or_spect = or_spect / or_spect_max.unsqueeze(1)
+
+        return y_noise, or_spect, sample_rate
+
+    @staticmethod
+    def spect_rolling_max_normalize(a,
+                                    window=50,
+                                    axis=1):
+        # calcuates a window sized rolling maximum over the first axis
+        # the result is duplicated
+        npad = ((0, 0), (window//2, window-window//2))
+        b = np.pad(a, pad_width=npad, mode='constant', constant_values=0)
+        shape = b.shape[:-1] + (b.shape[-1] - window, window)
+        # print(shape)
+        strides = b.strides + (b.strides[-1],)
+        rolling = np.lib.stride_tricks.as_strided(b,
+                                                shape=shape,
+                                                strides=strides)
+        rolling_max = np.max(rolling, axis=-1)
+        assert rolling_max.shape == a.shape
+        return rolling_max.max(axis=0)
 
 TS_CACHE = {}
 TS_PHONEME_CACHE = {}

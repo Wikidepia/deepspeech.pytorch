@@ -125,7 +125,7 @@ class TilingBlock(nn.Module):
         repeat_fms = []
         for fm, repeat in zip(feature_maps, self.repeats):
             t_fm = self.sound_tile(fm,
-                                   n_tile=repeat)            
+                                   n_tile=repeat)
             repeat_fms.append(t_fm)
 
         # check that dimensions match
@@ -144,3 +144,48 @@ class TilingBlock(nn.Module):
                 # print('Pad', repeat_fms[i].size())
 
         return repeat_fms
+
+
+class SemsegLoss(nn.Module):
+    def __init__(self,
+                 bce_weight=1,
+                 dice_weight=1,
+                 eps=1e-10,
+                 mse_weight=0
+                 ):
+        super().__init__()
+        self.nll_loss = nn.BCEWithLogitsLoss()
+        self.dice_weight = dice_weight
+        self.bce_weight = bce_weight
+        self.eps = eps
+        self.mse_weight = mse_weight
+        if mse_weight>0:
+            self.mse_loss = nn.MSELoss()        
+
+    def forward(self,
+                outputs,
+                targets):
+        # inputs and targets are assumed to be BxCxL
+        assert outputs.size() == targets.size()
+
+        bce_loss = self.nll_loss(input=outputs,
+                                 target=targets)
+
+        # dice_target = (targets == 1).float()
+        # probabilistic target
+        dice_target = targets.float()
+        dice_output = torch.sigmoid(outputs)
+
+        intersection = (dice_output * dice_target).sum()
+        union = dice_output.sum() + dice_target.sum() + self.eps
+        dice_loss = (-torch.log(2 * intersection / union))
+
+        if self.mse_weight > 0:
+            loss = bce_loss * self.bce_weight + \
+                   dice_loss * self.dice_weight + \
+                   self.mse_loss(input=outputs,
+                                 target=targets) * self.mse_weight 
+        else:
+            loss = bce_loss * self.bce_weight + dice_loss * self.dice_weight
+
+        return loss

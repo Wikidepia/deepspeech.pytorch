@@ -12,7 +12,7 @@ from warpctc_pytorch import CTCLoss
 
 from novograd import (AdamW,
                       Novograd)
-from linknet import (DenoiseLoss,
+from linknet import (SemsegLoss,
                      MaskSimilarity)
 from decoder import GreedyDecoder
 from model import DeepSpeech, supported_rnns
@@ -461,7 +461,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                  filenames,
                  input_percentages,
                  target_sizes,
-                 mask_targets) = data                
+                 mask_targets) = data
             else:
                 inputs, targets, filenames, input_percentages, target_sizes = data
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
@@ -480,7 +480,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                  output_sizes,
                  phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
             elif args.denoise:
-                logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)                  
+                logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)
             else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
@@ -590,7 +590,7 @@ def calculate_trainval_quality_metrics(checkpoint,
                  filenames,
                  input_percentages,
                  target_sizes,
-                 mask_targets) = data                   
+                 mask_targets) = data
             else:
                 inputs, targets, filenames, input_percentages, target_sizes = data
 
@@ -610,7 +610,7 @@ def calculate_trainval_quality_metrics(checkpoint,
                  output_sizes,
                  phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
             elif args.denoise:
-                logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)                 
+                logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)
             else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
@@ -728,8 +728,9 @@ class Trainer:
              input_percentages,
              target_sizes,
              mask_targets) = data
-             
-            mask_targets = mask_targets.squeeze(1).to(device)     
+
+            mask_targets = mask_targets.squeeze(1).to(device)
+
         else:
             inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
@@ -800,17 +801,28 @@ class Trainer:
             loss = loss / inputs.size(0)  # average the loss by minibatch
             loss = loss.to(device)
         elif args.denoise:
-            if False:
-                ctc_loss = criterion(logits,
-                                targets,
-                                output_sizes.cpu(),
-                                target_sizes).to(device) / inputs.size(0)  # average the loss by minibatch
-            else:
-                ctc_loss = 0
-            mask_loss = mask_criterion(mask_logits, mask_targets).to(device)
+            ctc_loss = criterion(logits,
+                            targets,
+                            output_sizes.cpu(),
+                            target_sizes).to(device) / inputs.size(0)
+            mask_loss = 50.0 * mask_criterion(mask_logits, mask_targets).to(device)
+
+            if torch.isnan(mask_loss):
+                print('Nan loss detected')
+                return 102
+
             loss = ctc_loss + mask_loss
-            # loss = loss / inputs.size(0)  
-            # loss = loss.to(device)
+
+            inf = float("inf")
+            if args.distributed:
+                loss_value = reduce_tensor(loss, args.world_size).item()
+            else:
+                loss_value = loss.item() * args.gradient_accumulation_steps
+
+            ctc_loss_value = ctc_loss.item()
+            if ctc_loss_value == inf or ctc_loss_value == -inf:
+                print("WARNING: received an inf CTC loss, setting loss value to 1000")
+                loss_value = 1000
         else:
             loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -818,15 +830,16 @@ class Trainer:
                 loss = loss / args.gradient_accumulation_steps
             loss = loss.to(device)
 
-        inf = float("inf")
-        if args.distributed:
-            loss_value = reduce_tensor(loss, args.world_size).item()
-        else:
-            loss_value = loss.item() * args.gradient_accumulation_steps
+        if not args.denoise:
+            inf = float("inf")
+            if args.distributed:
+                loss_value = reduce_tensor(loss, args.world_size).item()
+            else:
+                loss_value = loss.item() * args.gradient_accumulation_steps
 
-        if loss_value == inf or loss_value == -inf:
-            print("WARNING: received an inf loss, setting loss value to 1000")
-            loss_value = 1000
+            if loss_value == inf or loss_value == -inf:
+                print("WARNING: received an inf loss, setting loss value to 1000")
+                loss_value = 1000
 
         loss_value = float(loss_value)
         losses.update(loss_value, inputs.size(0))
@@ -835,8 +848,8 @@ class Trainer:
                                  inputs.size(0))
             mask_losses.update(mask_loss.item(),
                                inputs.size(0))
-            ctc_losses.update(ctc_loss, # .item()
-                              inputs.size(0))                                                                  
+            ctc_losses.update(ctc_loss.item(),
+                              inputs.size(0))
 
         # update_curriculum
 
@@ -895,7 +908,7 @@ class Trainer:
                     epoch + 1, batch_id + 1, len(train_sampler),
                     batch_time=batch_time, data_time=data_time, loss=losses,
                     mask_losses=mask_losses, ctc_losses=ctc_losses,
-                    mask_accuracy=mask_accuracy))                
+                    mask_accuracy=mask_accuracy))
             else:
                 print('GPU-{0} Epoch {1} [{2}/{3}]\t'
                     'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
@@ -960,7 +973,7 @@ def train(from_epoch, from_iter, from_checkpoint):
             total_loss += trainer.train_batch(epoch, i, data)
             num_losses += 1
 
-            if (i + 1) % 500 == 0:
+            if (i + 1) % 50 == 0:
                 # deal with GPU memory fragmentation
                 gc.collect()
                 torch.cuda.empty_cache()
@@ -992,6 +1005,9 @@ def train(from_epoch, from_iter, from_checkpoint):
                     check_model_quality(epoch, checkpoint, total_loss / num_losses, trainer.get_cer(), trainer.get_wer())
                     save_validation_curriculums(save_folder, checkpoint + 1, epoch + 1, i + 1)
                     checkpoint += 1
+
+                    gc.collect()
+                    torch.cuda.empty_cache()
 
                     model.train()
                     if args.checkpoint_anneal != 1:
@@ -1151,6 +1167,7 @@ if __name__ == '__main__':
             audio_conf['denoise'] = True
             audio_conf['noise_prob'] = args.noise_prob
             audio_conf['aug_type'] = args.aug_type
+            audio_conf['pytorch_stft'] = True
             print('Changed audio conf params')
 
         # REMOVE LATER
@@ -1257,7 +1274,9 @@ if __name__ == '__main__':
 
     criterion = CTCLoss()
     if args.denoise:
-        mask_criterion = DenoiseLoss()
+        mask_criterion = SemsegLoss(bce_weight=1.0,
+                                    dice_weight=0.0,
+                                    mse_weight=0.0)
         mask_metric = MaskSimilarity(thresholds=[0.05, 0.1, 0.15])
 
     decoder = GreedyDecoder(labels)
@@ -1325,6 +1344,6 @@ if __name__ == '__main__':
         mask_accuracy = AverageMeter()
         mask_losses = AverageMeter()
         ctc_losses = AverageMeter()
-        
+
 
     train(start_epoch, start_iter, start_checkpoint)
