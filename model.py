@@ -763,12 +763,13 @@ class DeepSpeech(nn.Module):
             'conv3':      nn.Sequential(*model.rnns.layers[1 + 2 * (repeat_layers // 3) + 1 : 1 + 3 * (repeat_layers // 3) + 2]),
             'final_conv': nn.Sequential(*model.rnns.layers[1 + 3 * (repeat_layers // 3) + 2 : ]),
         })
-        model.rnns.denoise = ShortLinkNetDenoising(filters=[161]+[cnn_width]*1)
+        model.rnns.denoise = LinkNetDenoising(filters=[161]+[cnn_width]*3)
         del model.rnns.layers
 
-        for block in [model.rnns.encoder]:
-            for p in block.parameters():
-                p.requires_grad = False
+        if True:
+            for block in [model.rnns.encoder]:
+                for p in block.parameters():
+                    p.requires_grad = False
         print('Gradients disabled for the encoder')
 
         return model
@@ -1079,26 +1080,26 @@ class ResidualRepeatWav2Letter(nn.Module):
                 'conv3':      nn.Sequential(*modules[1 + 2 * (repeat_layers // 3) + 1 : 1 + 3 * (repeat_layers // 3) + 2]),
                 'final_conv': nn.Sequential(*modules[1 + 3 * (repeat_layers // 3) + 2 : ]),
             })
-            self.denoise    = ShortLinkNetDenoising(filters=[161]+[cnn_width]*1)
+            self.denoise    = LinkNetDenoising(filters=[161]+[cnn_width]*3)
         else:
             self.layers = nn.Sequential(*modules)
 
     def forward(self, x):
         if self.denoise:
-            e1 = x
-            
-            # incur some additional overhead here
-            e2 = self.encoder['conv1'](e1)
-            denoise_mask = self.denoise(e1, e2)
-            assert e1.size() == denoise_mask.size()
 
+            # incur some additional overhead here
+            e1 = x
+            e2 = self.encoder['conv1'](e1)
+            e3 = self.encoder['conv2'](e2)
+            e4 = self.encoder['conv3'](e3)
+
+            # assert e1.size() == denoise_mask.size()
             # plain sigmoid gate
-            e1_denoised = e1 * torch.sigmoid(denoise_mask)
-            e2_denoised = self.encoder['conv1'](e1_denoised)
-            e3_denoised = self.encoder['conv2'](e2_denoised)
-            e4_denoised = self.encoder['conv3'](e3_denoised)
-            
-            return (self.encoder['final_conv'](e4_denoised),
+            # e1_denoised = e1 * torch.sigmoid(denoise_mask)
+
+            denoise_mask = self.denoise(e1, e2, e3, e4)
+
+            return (self.encoder['final_conv'](e4),
                     denoise_mask)
         else:
             return self.layers(x)
@@ -2200,7 +2201,7 @@ class NaiveDenoising(nn.Module):
          e3_tiled,
          e4_tiled) = self.tiling(e1,
                                  (self.compress_2(e2),
-                                  self.compress_3(e3), 
+                                  self.compress_3(e3),
                                   self.compress_4(e4)))
         x = torch.cat([e1,
                        e2_tiled,

@@ -801,11 +801,15 @@ class Trainer:
             loss = loss / inputs.size(0)  # average the loss by minibatch
             loss = loss.to(device)
         elif args.denoise:
+            ctc_loss = 0
+            """
             ctc_loss = criterion(logits,
-                            targets,
-                            output_sizes.cpu(),
-                            target_sizes).to(device) / inputs.size(0)
-            mask_loss = 50.0 * mask_criterion(mask_logits, mask_targets).to(device)
+                                 targets,
+                                 output_sizes.cpu(),
+                                 target_sizes).to(device) / inputs.size(0)
+            """
+            mask_loss = 50.0 * mask_criterion(mask_logits,
+                                             mask_targets).to(device)
 
             if torch.isnan(mask_loss):
                 print('Nan loss detected')
@@ -819,9 +823,10 @@ class Trainer:
             else:
                 loss_value = loss.item() * args.gradient_accumulation_steps
 
-            ctc_loss_value = ctc_loss.item()
+            ctc_loss_value = ctc_loss # .item()
             if ctc_loss_value == inf or ctc_loss_value == -inf:
                 print("WARNING: received an inf CTC loss, setting loss value to 1000")
+                ctc_loss_value = 1000
                 loss_value = 1000
         else:
             loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
@@ -848,7 +853,7 @@ class Trainer:
                                  inputs.size(0))
             mask_losses.update(mask_loss.item(),
                                inputs.size(0))
-            ctc_losses.update(ctc_loss.item(),
+            ctc_losses.update(ctc_loss_value,
                               inputs.size(0))
 
         # update_curriculum
