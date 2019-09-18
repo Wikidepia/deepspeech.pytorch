@@ -34,7 +34,8 @@ supported_rnns = {
     'cnn_residual_repeat_sep_bpe': None,
     'cnn_residual_repeat_sep_down8': None,
     'cnn_inv_bottleneck_repeat_sep_down8': None,
-    'cnn_residual_repeat_sep_down8_denoise':None
+    'cnn_residual_repeat_sep_down8_denoise':None,
+    'cnn_residual_repeat_sep_down8_groups8': None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -382,7 +383,8 @@ class DeepSpeech(nn.Module):
                     'skip': True,
                     'separable': True,
                     'add_downsample': 4,
-                    'dilated_blocks': [] # no dilation
+                    'dilated_blocks': [],  # no dilation
+                    'groups': 12  # optimal group count, 768 // 12 = 64 
                 })
             )
             # https://arxiv.org/abs/1905.09788
@@ -401,6 +403,29 @@ class DeepSpeech(nn.Module):
                     nn.Conv1d(in_channels=size,
                               out_channels=self._phoneme_count, kernel_size=1)
                 )
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8_groups8':  # add scale 8
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable': True,
+                    'add_downsample': 4,
+                    'dilated_blocks': [],  # no dilation
+                    'groups': 8  # optimal group count, 512 // 12 = 64 
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
         elif self._rnn_type == 'cnn_residual_repeat_sep_down8_denoise':  # add scale 8
             size = rnn_hidden_size
             self.rnns = ResidualRepeatWav2Letter(
@@ -620,7 +645,7 @@ class DeepSpeech(nn.Module):
                               'cnn_residual', 'cnn_jasper', 'cnn_jasper_2',
                               'cnn_residual_repeat', 'tds','cnn_residual_repeat_sep',
                               'cnn_residual_repeat_sep_bpe', 'cnn_residual_repeat_sep_down8',
-                              'cnn_inv_bottleneck_repeat_sep_down8']:
+                              'cnn_inv_bottleneck_repeat_sep_down8', 'cnn_residual_repeat_sep_down8_groups8']:
             x = x.squeeze(1)
             x = self.rnns(x)
             if hasattr(self, '_phoneme_count'):
@@ -683,7 +708,8 @@ class DeepSpeech(nn.Module):
         seq_len = input_length
         if self._rnn_type in ['cnn_residual_repeat_sep_bpe',
                               'cnn_residual_repeat_sep_down8',
-                              'cnn_inv_bottleneck_repeat_sep_down8']:
+                              'cnn_inv_bottleneck_repeat_sep_down8',
+                              'cnn_residual_repeat_sep_down8_groups8']:
             for m in self.rnns.modules():
                 if type(m) == nn.modules.conv.Conv1d:
                     seq_len = ((seq_len + 2 * m.padding[0] - m.dilation[0] * (m.kernel_size[0] - 1) - 1) / m.stride[0] + 1)
@@ -976,6 +1002,7 @@ class ResidualRepeatWav2Letter(nn.Module):
         skip = config.skip
 
         self.denoise = config.denoise if 'denoise' in config else False
+        self.groups = config.groups if 'groups' in config else 1
 
         downsampled_blocks = []
         downsampled_subblocks = []
@@ -1004,10 +1031,16 @@ class ResidualRepeatWav2Letter(nn.Module):
             print('Using inverted bottleneck')
 
         # "prolog"
-        modules = [Block(_in=161, out=cnn_width, kernel_size=kernel_size,
-                         padding=padding, stride=2, bnm=bnm, bias=not bnorm, dropout=dropout,
-                         nonlinearity=nn.ReLU(inplace=True),
-                         se_ratio=0, skip=False, repeat=1)] # no skips and attention
+        # no skips and attention
+        kwargs = {
+            '_in': 161, 'out': cnn_width, 'kernel_size': kernel_size,
+            'padding': padding, 'stride': 2, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
+            'nonlinearity': nn.ReLU(inplace=True),
+            'se_ratio': 0, 'skip': False, 'repeat': 1
+        }
+        if self.groups > 1: kwargs['groups'] = self.groups
+        modules = [Block(**kwargs)]
+
         # main convs
         # 3 blocks
         dilated_blocks = config.dilated_blocks
@@ -1024,10 +1057,14 @@ class ResidualRepeatWav2Letter(nn.Module):
 
         # add layer down-scaling
         if inverted_bottleneck:
-            modules.extend([Block(_in=cnn_width, out=cnn_width//4, kernel_size=kernel_size,
-                                  padding=padding, stride=1, bnm=bnm, bias=not bnorm, dropout=dropout,
-                                  nonlinearity=nn.ReLU(inplace=True),
-                                  se_ratio=0, skip=False, repeat=1)]) # no skips and attention
+            kwargs = {
+                '_in': cnn_width, 'out': cnn_width//4, 'kernel_size': kernel_size,
+                'padding': padding, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
+                'nonlinearity': nn.ReLU(inplace=True),
+                'se_ratio': 0, 'skip': False, 'repeat': 1
+            }
+            if self.groups > 1: kwargs['groups'] = self.groups
+            modules.extend([Block(**kwargs)]) # no skips and attention
 
         for j in range(0, 3):
             for _ in range(0, repeat_layers//3):
@@ -1037,38 +1074,60 @@ class ResidualRepeatWav2Letter(nn.Module):
                 if stride == 2:
                     # add extra downsampling layer
                     print('Downsampling block {} / subblock {}'.format(j, _))
+                    kwargs = {
+                        '_in': cnn_width, 'out': cnn_width, 'kernel_size': kernel_size,
+                        'padding': padding, 'dilation': dilation,
+                        'stride': stride, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
+                        'nonlinearity': nn.ReLU(inplace=True),
+                        'se_ratio': 0, 'skip': False, 'repeat': 1,
+                        'inverted_bottleneck': inverted_bottleneck
+                    }
+                    if self.groups > 1: kwargs['groups'] = self.groups
                     modules.extend(
-                        [Block(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
-                            padding=padding, dilation=dilation,
-                            stride=stride, bnm=bnm, bias=not bnorm, dropout=dropout,
-                            nonlinearity=nn.ReLU(inplace=True),
-                            se_ratio=0, skip=False, repeat=1,
-                            inverted_bottleneck=inverted_bottleneck)]
+                        [Block(**kwargs)]
                     )
+                kwargs = {
+                    '_in': cnn_width, 'out': cnn_width, 'kernel_size': kernel_size,
+                    'padding': padding, 'dilation': dilation,
+                    'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
+                    'nonlinearity': nn.ReLU(inplace=True),
+                    'se_ratio': se_ratio, 'skip': skip, 'repeat': repeats[j],
+                    'inverted_bottleneck': inverted_bottleneck
+                }
+                if self.groups > 1: kwargs['groups'] = self.groups
                 modules.extend(
-                    [Block(_in=cnn_width, out=cnn_width, kernel_size=kernel_size,
-                           padding=padding, dilation=dilation,
-                           stride=1, bnm=bnm, bias=not bnorm, dropout=dropout,
-                           nonlinearity=nn.ReLU(inplace=True),
-                           se_ratio=se_ratio, skip=skip, repeat=repeats[j],
-                           inverted_bottleneck=inverted_bottleneck)]
+                    [Block(**kwargs)]
                 )
         # add layer up-scaling
         if inverted_bottleneck:
-            modules.extend([Block(_in=cnn_width//4, out=cnn_width, kernel_size=kernel_size,
-                                  padding=padding, stride=1, bnm=bnm, bias=not bnorm, dropout=dropout,
-                                  nonlinearity=nn.ReLU(inplace=True),
-                                  se_ratio=0, skip=False, repeat=1)]) # no skips and attention
+            kwargs = {
+                '_in': cnn_width//4, 'out': cnn_width, 'kernel_size': kernel_size,
+                'padding': padding, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
+                'nonlinearity': nn.ReLU(inplace=True),
+                'se_ratio': 0, 'skip': False, 'repeat': 1
+            }
+            if self.groups > 1: kwargs['groups'] = self.groups
+            modules.extend([Block(**kwargs)]) # no skips and attention
+
         # "epilog"
-        modules.extend([Block(_in=cnn_width, out=size, kernel_size=31,
-                              padding=15, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
-                              nonlinearity=nn.ReLU(inplace=True),
-                              se_ratio=0, skip=False, repeat=1)]) # no skips and attention
+        kwargs = {
+            '_in': cnn_width, 'out': size, 'kernel_size': 31,
+            'padding': 15, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
+            'nonlinearity': nn.ReLU(inplace=True),
+            'se_ratio': 0, 'skip': False, 'repeat': 1
+        }
+        if self.groups > 1: kwargs['groups'] = self.groups
+        modules.extend([Block(**kwargs)]) # no skips and attention
+
         if True:
-            modules.extend([Block(_in=size, out=size, kernel_size=1,
-                                padding=0, stride=1,bnm=bnm, bias=not bnorm, dropout=dropout,
-                                nonlinearity=nn.ReLU(inplace=True),
-                                se_ratio=0, skip=False, repeat=1)]) # no skips and attention
+            kwargs = {
+                '_in': size, 'out': size, 'kernel_size': 1,
+                'padding': 0, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
+                'nonlinearity': nn.ReLU(inplace=True),
+                'se_ratio': 0, 'skip': False, 'repeat': 1
+            }
+            if self.groups > 1: kwargs['groups'] = self.groups
+            modules.extend([Block(**kwargs)]) # no skips and attention
 
         if self.denoise:
             assert not inverted_bottleneck
@@ -1303,11 +1362,12 @@ class SeparableRepeatBlock(nn.Module):
                  skip=False,
                  repeat=1,
                  mix_channels=True,
-                 inverted_bottleneck=False):
+                 inverted_bottleneck=False,
+                 groups=12):
         super(SeparableRepeatBlock, self).__init__()
 
         inverted_bottleneck_scale = 4
-        groups = 12
+        groups = groups
         self.skip = skip
         has_se = (se_ratio is not None) and (0 < se_ratio <= 1)
         dropout = nn.Dropout(dropout)
