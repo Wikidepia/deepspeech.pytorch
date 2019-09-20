@@ -35,7 +35,8 @@ supported_rnns = {
     'cnn_residual_repeat_sep_down8': None,
     'cnn_inv_bottleneck_repeat_sep_down8': None,
     'cnn_residual_repeat_sep_down8_denoise':None,
-    'cnn_residual_repeat_sep_down8_groups8': None
+    'cnn_residual_repeat_sep_down8_groups8': None,
+    'cnn_residual_repeat_sep_down8_groups8_plain_gru': None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -95,7 +96,9 @@ class MaskConv(nn.Module):
 
 
 class BatchRNN(nn.Module):
-    def __init__(self, input_size, hidden_size, rnn_type=nn.LSTM, bidirectional=False, batch_norm=True, bnm=0.1):
+    def __init__(self, input_size, hidden_size,
+                 rnn_type=nn.LSTM, bidirectional=False, batch_norm=True, bnm=0.1,
+                 batch_first=False):
         super(BatchRNN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -109,26 +112,42 @@ class BatchRNN(nn.Module):
         else:
             self.sru = False
             self.rnn = rnn_type(input_size=input_size, hidden_size=hidden_size,
-                                bidirectional=bidirectional, bias=True)
+                                bidirectional=bidirectional, bias=True,
+                                batch_first=batch_first)
         self.num_directions = 2 if bidirectional else 1
 
     def flatten_parameters(self):
         self.rnn.flatten_parameters()
 
-    def forward(self, x, output_lengths):
+    def forward(self, x, output_lengths=None):
         assert x.is_cuda
-        max_seq_length = x.size(0)
-        if self.batch_norm is not None:
-            x = self.batch_norm(x)
-            # x = x._replace(data=self.batch_norm(x.data))
-        if not self.sru:
-            x = nn.utils.rnn.pack_padded_sequence(x, output_lengths.data.cpu().numpy())
-        x, h = self.rnn(x)
-        if not self.sru:
-            x, _ = nn.utils.rnn.pad_packed_sequence(x, total_length=max_seq_length)
-        if self.bidirectional:
-            x = x.view(x.size(0), x.size(1), 2, -1).sum(2).view(x.size(0), x.size(1), -1)  # (TxNxH*2) -> (TxNxH) by sum
-        # x = x.to('cuda')
+        if output_lengths is not None:
+            # legacy case
+            max_seq_length = x.size(0)
+            if self.batch_norm is not None:
+                x = self.batch_norm(x)
+                # x = x._replace(data=self.batch_norm(x.data))
+            if not self.sru:
+                x = nn.utils.rnn.pack_padded_sequence(x, output_lengths.data.cpu().numpy())
+            x, h = self.rnn(x)
+            if not self.sru:
+                x, _ = nn.utils.rnn.pad_packed_sequence(x, total_length=max_seq_length)
+            if self.bidirectional:
+                x = x.view(x.size(0), x.size(1), 2, -1).sum(2).view(x.size(0), x.size(1), -1)  # (TxNxH*2) -> (TxNxH) by sum
+            # x = x.to('cuda')
+        else:
+            # in case of CNN encoder
+            # all sequences are already of the same lengths
+            # and 8 times shorter, so this code does not matter as much
+            if self.batch_norm is not None:
+                x = self.batch_norm(x)
+            x, h = self.rnn(x)
+            if self.bidirectional:
+                x = x.view(x.size(0),
+                           x.size(1),
+                           2, -1).sum(2).view(x.size(0),
+                                              x.size(1),
+                                              -1)  # (TxNxH*2) -> (TxNxH) by sum
         return x
 
 
@@ -233,7 +252,8 @@ class DeepSpeech(nn.Module):
         window_size = self._audio_conf.get("window_size", 0.02)
         num_classes = len(self._labels)
 
-        if self._rnn_type not in ['tds']:
+        if self._rnn_type not in ['tds',
+                                  'cnn_residual_repeat_sep_down8_groups8_plain_gru']:
             self.dropout1 = nn.Dropout(p=0.1, inplace=True)
             self.conv = MaskConv(nn.Sequential(
                 nn.Conv2d(1, 32, kernel_size=(41, 11), stride=(2, 2), padding=(20, 5)),
@@ -384,7 +404,7 @@ class DeepSpeech(nn.Module):
                     'separable': True,
                     'add_downsample': 4,
                     'dilated_blocks': [],  # no dilation
-                    'groups': 12  # optimal group count, 768 // 12 = 64 
+                    'groups': 12  # optimal group count, 768 // 12 = 64
                 })
             )
             # https://arxiv.org/abs/1905.09788
@@ -420,7 +440,31 @@ class DeepSpeech(nn.Module):
                     'separable': True,
                     'add_downsample': 4,
                     'dilated_blocks': [],  # no dilation
-                    'groups': 8  # optimal group count, 512 // 12 = 64 
+                    'groups': 8  # optimal group count, 512 // 12 = 64
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8_groups8_plain_gru':  # add scale 8
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable': True,
+                    'add_downsample': 4,
+                    'dilated_blocks': [],  # no dilation
+                    'groups': 8,  # optimal group count, 512 // 12 = 64
+                    'decoder_type': 'plain_gru'
                 })
             )
             self.fc = nn.Sequential(
@@ -645,7 +689,8 @@ class DeepSpeech(nn.Module):
                               'cnn_residual', 'cnn_jasper', 'cnn_jasper_2',
                               'cnn_residual_repeat', 'tds','cnn_residual_repeat_sep',
                               'cnn_residual_repeat_sep_bpe', 'cnn_residual_repeat_sep_down8',
-                              'cnn_inv_bottleneck_repeat_sep_down8', 'cnn_residual_repeat_sep_down8_groups8']:
+                              'cnn_inv_bottleneck_repeat_sep_down8', 'cnn_residual_repeat_sep_down8_groups8',
+                              'cnn_residual_repeat_sep_down8_groups8_plain_gru']:
             x = x.squeeze(1)
             x = self.rnns(x)
             if hasattr(self, '_phoneme_count'):
@@ -709,7 +754,8 @@ class DeepSpeech(nn.Module):
         if self._rnn_type in ['cnn_residual_repeat_sep_bpe',
                               'cnn_residual_repeat_sep_down8',
                               'cnn_inv_bottleneck_repeat_sep_down8',
-                              'cnn_residual_repeat_sep_down8_groups8']:
+                              'cnn_residual_repeat_sep_down8_groups8',
+                              'cnn_residual_repeat_sep_down8_groups8_plain_gru']:
             for m in self.rnns.modules():
                 if type(m) == nn.modules.conv.Conv1d:
                     seq_len = ((seq_len + 2 * m.padding[0] - m.dilation[0] * (m.kernel_size[0] - 1) - 1) / m.stride[0] + 1)
@@ -1003,6 +1049,7 @@ class ResidualRepeatWav2Letter(nn.Module):
 
         self.denoise = config.denoise if 'denoise' in config else False
         self.groups = config.groups if 'groups' in config else 1
+        self.decoder_type = config.decoder_type if 'decoder_type' in config else 'pointwise'
 
         downsampled_blocks = []
         downsampled_subblocks = []
@@ -1109,17 +1156,17 @@ class ResidualRepeatWav2Letter(nn.Module):
             if self.groups > 1: kwargs['groups'] = self.groups
             modules.extend([Block(**kwargs)]) # no skips and attention
 
-        # "epilog"
-        kwargs = {
-            '_in': cnn_width, 'out': size, 'kernel_size': 31,
-            'padding': 15, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
-            'nonlinearity': nn.ReLU(inplace=True),
-            'se_ratio': 0, 'skip': False, 'repeat': 1
-        }
-        if self.groups > 1: kwargs['groups'] = self.groups
-        modules.extend([Block(**kwargs)]) # no skips and attention
+        if self.decoder_type == 'pointwise':
+            # "epilog"
+            kwargs = {
+                '_in': cnn_width, 'out': size, 'kernel_size': 31,
+                'padding': 15, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
+                'nonlinearity': nn.ReLU(inplace=True),
+                'se_ratio': 0, 'skip': False, 'repeat': 1
+            }
+            if self.groups > 1: kwargs['groups'] = self.groups
+            modules.extend([Block(**kwargs)]) # no skips and attention
 
-        if True:
             kwargs = {
                 '_in': size, 'out': size, 'kernel_size': 1,
                 'padding': 0, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
@@ -1128,6 +1175,29 @@ class ResidualRepeatWav2Letter(nn.Module):
             }
             if self.groups > 1: kwargs['groups'] = self.groups
             modules.extend([Block(**kwargs)]) # no skips and attention
+        elif self.decoder_type == 'plain_gru':
+            # retain the large last kernel for now
+            # make overall size smaller though
+            kwargs = {
+                '_in': cnn_width, 'out': size, 'kernel_size': 31,
+                'padding': 15, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
+                'nonlinearity': nn.ReLU(inplace=True),
+                'se_ratio': 0, 'skip': False, 'repeat': 1
+            }
+            if self.groups > 1: kwargs['groups'] = self.groups
+            modules.extend([Block(**kwargs)])  # no skips and attention
+
+            rnn_kwargs = {
+                'input_size': size, 'hidden_size': size, 'rnn_type': nn.GRU,
+                'bidirectional': True, 'batch_norm': True, 'batch_first': False
+            }
+            rnns = []
+            for _ in range(2):
+                rnn = BatchRNN(**rnn_kwargs)
+                rnns.append(rnn)
+            self.decoder = nn.Sequential(*rnns)
+        else:
+            raise NotImplementedError('{} decoder not implemented'.format(self.decoder))
 
         if self.denoise:
             assert not inverted_bottleneck
@@ -1161,7 +1231,18 @@ class ResidualRepeatWav2Letter(nn.Module):
             return (self.encoder['final_conv'](e4),
                     denoise_mask)
         else:
-            return self.layers(x)
+            if self.decoder_type == 'plain_gru':
+                encoded = self.layers(x)
+                # DS2 legacy code assumes T*N*H input
+                # i.e.        length * batch    * channels
+                # instead of  batch  * channels * length
+                return self.decoder(
+                    encoded.permute(2, 0, 1).contiguous()
+                    ).permute(1, 2, 0).contiguous()
+            elif self.decoder_type == 'pointwise':
+                return self.layers(x)
+            else:
+                raise NotImplementedError('Forward function for {} decoder not implemented'.format(self.decoder))
 
 
 class GLUBlock(nn.Module):
@@ -2098,6 +2179,12 @@ class Conv2dSamePadding(nn.Conv2d):
             x = F.pad(x, [pad_w//2, pad_w - pad_w//2, pad_h//2, pad_h - pad_h//2])
         return F.conv2d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
+
+class SequentialView(nn.Module):
+	def __init__(self):
+		super(SequentialView, self).__init__()
+	def forward(self, x):
+		return x.permute(0, 2, 1).contiguous()
 
 # a hack to use LayerNorm in sequential
 # move the normalized dimension to the last dimension
