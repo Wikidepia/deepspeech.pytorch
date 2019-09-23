@@ -146,7 +146,7 @@ class BeamCTCDecoder(Decoder):
 
 class GreedyDecoder(Decoder):
     def __init__(self, labels, blank_index=0,
-                 bpe_as_lists=False, self.norm_text=False):
+                 bpe_as_lists=False, norm_text=False):
         super(GreedyDecoder, self).__init__(labels, blank_index)
         self.bpe_as_lists = bpe_as_lists
         self.norm_text = norm_text
@@ -194,7 +194,7 @@ class GreedyDecoder(Decoder):
                     else:
                         string += char
                     offsets.append(i)
-            prev_token = char
+                prev_token = char
             
         if self.bpe_as_lists:
             # use from ast import literal_eval
