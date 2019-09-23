@@ -522,7 +522,7 @@ TS_PHONEME_CACHE = {}
 
 class SpectrogramDataset(Dataset, SpectrogramParser):
     def __init__(self, audio_conf, manifest_filepath, cache_path, labels, normalize=False, augment=False,
-                 max_items=None, curriculum_filepath=None):
+                 max_items=None, curriculum_filepath=None, use_attention=False):
         """
         Dataset that loads tensors via a csv containing file paths to audio files and transcripts separated by
         a comma. Each new line is a different sample. Example below:
@@ -555,7 +555,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         if self.use_bpe:
             from data.bpe_labels import Labels as BPELabels
             self.labels = BPELabels(sp_model=audio_conf.get('sp_model', ''),  # will raise error if model is invalid
-                                    use_phonemes=False)
+                                    use_phonemes=False,
+                                    s2s_decoder=use_attention)
         else:
             self.labels = Labels(labels)
 

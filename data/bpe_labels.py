@@ -91,6 +91,7 @@ class Labels:
         assert len(self.labels_map) == len(self.label_list)
 
         self.labels_map_reverse = {v: k for k, v in self.labels_map.items()}
+        print('Test whole bpe class {}'.format(self.parse('пушистый рыжий котик')))        
 
     def encode_phonemes(text):
         text = text.replace('\n','')
