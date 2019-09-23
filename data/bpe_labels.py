@@ -32,7 +32,8 @@ class Labels:
                  use_phonemes=False,
                  sp_model='data/spm_train_v05_cleaned_asr_10s_phoneme.model',
                  sp_model_phoneme='data/phoneme_spm_train_v05_cleaned_asr_10s_phoneme.model',
-                 sp_space_token='▁'):
+                 sp_space_token='▁',
+                 s2s_decoder=False):
 
         self.use_phonemes = use_phonemes
         # will not be used
@@ -42,6 +43,7 @@ class Labels:
         # also reserve sp space token
         # and replace it with ordinary space later
         self.sp_space_token = sp_space_token
+        self.s2s_decoder = s2s_decoder
 
         self.spm = sp.SentencePieceProcessor()
         if self.use_phonemes:
@@ -68,12 +70,24 @@ class Labels:
             self.labels_map[key] = len(self.labels_map)
             self.label_list.append(key)
 
-        self.labels_map["2"] = len(self.labels_map)
+        if not self.s2s_decoder:
+            # only for ctc loss
+            self.labels_map["2"] = len(self.labels_map)
+            self.label_list.append("2")
+
+        # both for ctc and attention
+        # predict " " as a separate token
         self.labels_map[" "] = len(self.labels_map)
-        self.label_list.append("2")
         self.label_list.append(" ")
+
+        if self.s2s_decoder:
+            self.labels_map["["] = len(self.labels_map)  # sos token
+            self.label_list.append("[")
+            self.labels_map["]"] = len(self.labels_map)  # eos token
+            self.label_list.append("]")
+
         # print(self.labels_map)
-        # print(self.label_list)        
+        # print(self.label_list)
         assert len(self.labels_map) == len(self.label_list)
 
         self.labels_map_reverse = {v: k for k, v in self.labels_map.items()}
@@ -94,7 +108,6 @@ class Labels:
                 out.append(' ')
         return ''.join(out)
 
-
     def parse(self, text):
         if self.use_phonemes:
             text = ''.join([_ for _ in list(text)
@@ -103,6 +116,7 @@ class Labels:
             text = ''.join([_ for _ in list(text)
                             if _ in russian_alphabet + '- '])
         text = remove_extra_spaces(text).strip()
+
         if not self.use_phonemes:
             text = text.lower()
 
@@ -131,6 +145,8 @@ class Labels:
             sp_transcript = self.spm.encode_as_pieces(text)
 
         # print(sp_transcript)
+        if self.s2s_decoder:
+            transcript.append(self.labels_map['['])
 
         for i, token in enumerate(sp_transcript):
             try:
@@ -141,12 +157,16 @@ class Labels:
                     code = self.labels_map[' ']
                 else:
                     code = self.labels_map[token]
-                    if transcript and transcript[-1] == code:
-                        code = self.labels_map['2']  # double char
+                    if not self.s2s_decoder:
+                        if transcript and transcript[-1] == code:
+                            code = self.labels_map['2']  # double char for ctc
                 transcript.append(code)
             except Exception as e:
                 msg = 'Error {} with text {}, transcript {}'.format(str(e), text, sp_transcript)
                 logger.error(msg, enqueue=True)
+
+        if self.s2s_decoder:
+            transcript.append(self.labels_map[']'])
 
         # print(transcript, self.render_transcript(transcript))
         return transcript

@@ -730,7 +730,6 @@ class Trainer:
              mask_targets) = data
 
             mask_targets = mask_targets.squeeze(1).to(device)
-
         else:
             inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()

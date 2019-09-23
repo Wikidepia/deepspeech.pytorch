@@ -34,7 +34,7 @@ supported_rnns = {
     'cnn_residual_repeat_sep_bpe': None,
     'cnn_residual_repeat_sep_down8': None,
     'cnn_inv_bottleneck_repeat_sep_down8': None,
-    'cnn_residual_repeat_sep_down8_denoise':None,
+    'cnn_residual_repeat_sep_down8_denoise': None,
     'cnn_residual_repeat_sep_down8_groups8': None,
     'cnn_residual_repeat_sep_down8_groups8_plain_gru': None
 }
@@ -108,7 +108,7 @@ class BatchRNN(nn.Module):
         if rnn_type == 'sru':
             self.sru = True
             self.rnn = SRU(input_size, hidden_size,
-                           bidirectional=bidirectional, rescale = True)
+                           bidirectional=bidirectional, rescale=True)
         else:
             self.sru = False
             self.rnn = rnn_type(input_size=input_size, hidden_size=hidden_size,
@@ -469,6 +469,28 @@ class DeepSpeech(nn.Module):
             )
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8_groups8_attention':
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable': True,
+                    'add_downsample': 4,
+                    'dilated_blocks': [],  # no dilation
+                    'groups': 8,  # optimal group count, 512 // 12 = 64
+                    'decoder_type': 'attention',
+                    'num_classes': num_classes + 2  # also include sos and eos tokens
+                })
             )
         elif self._rnn_type == 'cnn_residual_repeat_sep_down8_denoise':  # add scale 8
             size = rnn_hidden_size
@@ -1050,6 +1072,7 @@ class ResidualRepeatWav2Letter(nn.Module):
         self.denoise = config.denoise if 'denoise' in config else False
         self.groups = config.groups if 'groups' in config else 1
         self.decoder_type = config.decoder_type if 'decoder_type' in config else 'pointwise'
+        self.num_classes = config.num_classes if 'num_classes' in config else 0
 
         downsampled_blocks = []
         downsampled_subblocks = []
@@ -1196,6 +1219,23 @@ class ResidualRepeatWav2Letter(nn.Module):
                 rnn = BatchRNN(**rnn_kwargs)
                 rnns.append(rnn)
             self.decoder = nn.Sequential(*rnns)
+        elif self.decoder_type == 'attention':
+            # retain the large last kernel for now
+            # make overall size smaller though
+            kwargs = {
+                '_in': cnn_width, 'out': size, 'kernel_size': 31,
+                'padding': 15, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
+                'nonlinearity': nn.ReLU(inplace=True),
+                'se_ratio': 0, 'skip': False, 'repeat': 1
+            }
+            if self.groups > 1: kwargs['groups'] = self.groups
+            modules.extend([Block(**kwargs)])  # no skips and attention
+
+            # size serves as hidden_size of all GRU models
+            attention = BahdanauAttention(size, query_size=size)
+            self.decoder = Decoder(256, size,
+                                   self.num_classes, attention,
+                                   num_layers=2, dropout=dropout)
         else:
             raise NotImplementedError('{} decoder not implemented'.format(self.decoder))
 
@@ -1239,6 +1279,8 @@ class ResidualRepeatWav2Letter(nn.Module):
                 return self.decoder(
                     encoded.permute(2, 0, 1).contiguous()
                     ).permute(1, 2, 0).contiguous()
+            elif self.decoder_type == 'attention':
+                cnn_states = self.layers(x)
             elif self.decoder_type == 'pointwise':
                 return self.layers(x)
             else:
@@ -2380,6 +2422,225 @@ class ShortLinkNetDenoising(nn.Module):
         d1 = self.decoder1(e2)[:,:,:e1.size(2)] + e1
         out = self.final_layer(d1)
         return out
+
+
+class BahdanauAttention(nn.Module):
+    """Implements Bahdanau (MLP) attention"""
+
+    def __init__(self,
+                 hidden_size,
+                 key_size=None,
+                 query_size=None):
+        super(BahdanauAttention, self).__init__()
+
+        # We assume a bi-directional encoder so key_size is 2*hidden_size
+        key_size = 2 * hidden_size if key_size is None else key_size
+        query_size = hidden_size if query_size is None else query_size
+
+        self.key_layer = nn.Linear(key_size, hidden_size, bias=False)
+        self.query_layer = nn.Linear(query_size, hidden_size, bias=False)
+        self.energy_layer = nn.Linear(hidden_size, 1, bias=False)
+
+        # to store attention scores
+        self.alphas = None
+
+    def forward(self,
+                query=None,
+                proj_key=None,
+                value=None,
+                mask=None):
+        assert mask is not None, "mask is required"
+
+        # We first project the query (the decoder state).
+        # The projected keys (the encoder states) were already pre-computated.
+        query = self.query_layer(query)
+
+        # Calculate scores.
+        scores = self.energy_layer(torch.tanh(query + proj_key))
+        scores = scores.squeeze(2).unsqueeze(1)
+
+        # Mask out invalid positions.
+        # The mask marks valid positions so we invert it using `mask & 0`.
+        scores.data.masked_fill_(mask == 0, -float('inf'))
+
+        # Turn scores to probabilities.
+        alphas = F.softmax(scores, dim=-1)
+        self.alphas = alphas
+
+        # The context vector is the weighted sum of the values.
+        context = torch.bmm(alphas, value)
+
+        # context shape: [B, 1, 2D], alphas shape: [B, 1, M]
+        return context, alphas
+
+
+class Generator(nn.Module):
+    """Define standard linear + softmax generation step."""
+    def __init__(self, hidden_size, vocab_size):
+        super(Generator, self).__init__()
+        self.proj = nn.Linear(hidden_size, vocab_size, bias=False)
+
+    def forward(self, x):
+        return self.proj(x)
+
+
+class Decoder(nn.Module):
+    """A conditional RNN decoder with attention."""
+
+    def __init__(self,
+                 emb_size, hidden_size, tgt_vocab, attention,
+                 num_layers=1, dropout=0.5,
+                 bridge=True, heavy_decoder=False,
+                 add_input_skip=False, skip_attention=None,
+                 sos_index=299
+                 ):
+        super(Decoder, self).__init__()
+
+        self.dropout = dropout
+        self.attention = attention
+        self.tgt_vocab = tgt_vocab
+        self.sos_index = sos_index
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+        self.add_input_skip = add_input_skip
+
+        self.trg_embed = nn.Embedding(tgt_vocab, emb_size)
+        self.generator = Generator(hidden_size, tgt_vocab)
+
+        self.rnn = nn.GRU(emb_size + hidden_size,
+                          hidden_size,
+                          num_layers,
+                          batch_first=True,
+                          dropout=dropout)
+
+        # to initialize from the final encoder state
+        # self.bridge = nn.Linear(2*hidden_size, hidden_size, bias=True) if bridge else None
+
+        # use CNN encoded states to initialize final encoder state
+        self.bridge = nn.GRU(hidden_size,
+                                hidden_size,
+                                num_layers,
+                                batch_first=True,
+                                dropout=dropout)
+
+        self.dropout_layer = nn.Dropout(p=dropout)
+        self.pre_output_layer = nn.Linear(hidden_size + hidden_size + emb_size*(1+add_input_skip),
+                                            hidden_size, bias=False)
+
+
+    def forward_step(self, prev_embed, encoder_hidden, src_mask, proj_key, hidden):
+        """Perform a single decoder step (1 word)"""
+
+        # compute context vector using attention mechanism
+        query = hidden[-1].unsqueeze(1)  # [#layers, B, D] -> [B, 1, D]
+        context, attn_probs = self.attention(
+            query=query, proj_key=proj_key,
+            value=encoder_hidden, mask=src_mask
+        )
+        # update rnn hidden state
+        rnn_input = torch.cat([prev_embed, context], dim=2)
+        output, hidden = self.rnn(rnn_input, hidden)
+
+        pre_output = torch.cat([prev_embed, output, context], dim=2)
+        pre_output = self.dropout_layer(pre_output)
+        pre_output = self.pre_output_layer(pre_output)
+
+        return output, hidden, pre_output
+
+
+    def forward(self,
+                cnn_states,
+                trg=None):
+        if self.training:
+            return self.train_batch(cnn_states,
+                                    trg)
+        else:
+            return self.inference(cnn_states)
+
+
+    def train_batch(self,
+                    cnn_states,
+                    trg):
+        """Unroll the decoder one step at a time."""
+        src_mask = torch.ones(cnn_states.size(0),
+                              cnn_states.size(1)).unsqueeze(1)
+        max_len = cnn_states.size(1)
+
+        trg_embed = self.trg_embed(trg)
+        encoder_hidden, encoder_final = self.init_rnn_states(cnn_states)
+
+        # initialize decoder hidden state
+        if hidden is None:
+            hidden = encoder_hidden
+
+        # pre-compute projected encoder hidden states
+        # (the "keys" for the attention mechanism)
+        # this is only done for efficiency
+        proj_key = self.attention.key_layer(encoder_hidden)
+
+        # here we store all intermediate hidden states and pre-output vectors
+        #decoder_states = []
+        pre_output_vectors = []
+
+        # unroll the decoder RNN for max_len steps
+        for i in range(max_len):
+            prev_embed = trg_embed[:, i].unsqueeze(1)
+            output, hidden, pre_output = self.forward_step(
+                prev_embed, encoder_hidden, src_mask, proj_key, hidden,
+                skip=skip, skip_key=skip_key)
+            #decoder_states.append(output)
+            pre_output_vectors.append(pre_output)
+
+        #decoder_states = torch.cat(decoder_states, dim=1)
+        pre_output_vectors = torch.cat(pre_output_vectors, dim=1)
+        output = self.generator(pre_output_vectors)
+        return output
+
+
+    def inference(self, cnn_states):
+
+        batch_size = cnn_states.size(0)
+        src_mask = torch.ones(cnn_states.size(0),
+                              cnn_states.size(1)).unsqueeze(1)
+        max_len = cnn_states.size(1)
+
+        # initial state with sos indices
+        trg = torch.ones(batch_size, 1).fill_(self.sos_index).type_as(encoder_final).long()
+        trg_mask = torch.ones_like(trg)
+
+        encoder_hidden, encoder_final = self.init_rnn_states(cnn_states)
+        hidden = encoder_hidden
+
+        proj_key = self.attention.key_layer(encoder_hidden)
+
+        # here we store all intermediate hidden states and pre-output vectors
+        #decoder_states = []
+        pre_output_vectors = []
+
+        # unroll the decoder RNN for max_len steps
+        for i in range(max_len):
+            prev_embed = self.trg_embed(trg)
+            output, hidden, pre_output = self.forward_step(
+                prev_embed, encoder_hidden, src_mask, proj_key, hidden)
+            #decoder_states.append(output)
+            pre_output_vectors.append(pre_output)
+            # we predict from the pre-output layer, which is
+            # a combination of Decoder state, prev emb, and context
+            prob = self.generator(pre_output[:, -1])
+            _, next_word = torch.max(prob, dim=1)
+            next_word = next_word.data
+            trg = next_word.unsqueeze(dim=1)
+
+        #decoder_states = torch.cat(decoder_states, dim=1)
+        pre_output_vectors = torch.cat(pre_output_vectors, dim=1)
+
+        output = self.generator(pre_output_vectors)
+        return output
+
+
+    def init_rnn_states(self, cnn_states):
+        output, final = self.bridge(cnn_states)
+        return output, final
 
 
 def main():
