@@ -86,11 +86,12 @@ class Labels:
             self.labels_map["]"] = len(self.labels_map)  # eos token
             self.label_list.append("]")
 
-        # print(self.labels_map)
-        # print(self.label_list)
+        print(self.labels_map)
+        print(self.label_list)
         assert len(self.labels_map) == len(self.label_list)
 
         self.labels_map_reverse = {v: k for k, v in self.labels_map.items()}
+        print('Test whole bpe class {}'.format(self.parse('пушистый рыжий котик')))        
 
     def encode_phonemes(text):
         text = text.replace('\n','')

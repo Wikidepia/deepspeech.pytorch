@@ -696,7 +696,8 @@ class DeepSpeech(nn.Module):
                 SequenceWise(fully_connected),
             )
 
-    def forward(self, x, lengths):
+    def forward(self, x, lengths=None,
+                trg=None):
         # assert x.is_cuda
         if DEBUG: print(lengths)
         lengths = lengths.cpu().int()
@@ -720,6 +721,12 @@ class DeepSpeech(nn.Module):
                 x_phoneme = x_phoneme.transpose(1, 2).transpose(0, 1).contiguous()
             x = self.fc(x)
             x = x.transpose(1, 2).transpose(0, 1).contiguous()
+        elif self._rnn_type in ['cnn_residual_repeat_sep_down8_groups8_attention']:
+            x = x.squeeze(1)
+            x = self.rnns(x)
+            # just return the result, all processing is done inside
+            # no difference between softmax / wo softmax
+            return x, output_lengths
         elif self._rnn_type == 'cnn_residual_repeat_sep_down8_denoise':
             x = x.squeeze(1)
             x, denoise_mask = self.rnns(x)
@@ -777,7 +784,8 @@ class DeepSpeech(nn.Module):
                               'cnn_residual_repeat_sep_down8',
                               'cnn_inv_bottleneck_repeat_sep_down8',
                               'cnn_residual_repeat_sep_down8_groups8',
-                              'cnn_residual_repeat_sep_down8_groups8_plain_gru']:
+                              'cnn_residual_repeat_sep_down8_groups8_plain_gru',
+                              'cnn_residual_repeat_sep_down8_groups8_attention']:
             for m in self.rnns.modules():
                 if type(m) == nn.modules.conv.Conv1d:
                     seq_len = ((seq_len + 2 * m.padding[0] - m.dilation[0] * (m.kernel_size[0] - 1) - 1) / m.stride[0] + 1)
@@ -1253,7 +1261,8 @@ class ResidualRepeatWav2Letter(nn.Module):
         else:
             self.layers = nn.Sequential(*modules)
 
-    def forward(self, x):
+    def forward(self, x,
+                trg=None):
         if self.denoise:
 
             # incur some additional overhead here
@@ -1280,7 +1289,11 @@ class ResidualRepeatWav2Letter(nn.Module):
                     encoded.permute(2, 0, 1).contiguous()
                     ).permute(1, 2, 0).contiguous()
             elif self.decoder_type == 'attention':
-                cnn_states = self.layers(x)
+                # transform cnn format (batch, channel, length)
+                # to rnn format (batch, length, channel)
+                cnn_states = self.layers(x).permute(0, 2, 1).contiguous()
+                return self.decoder(cnn_states,
+                                    trg=trg)
             elif self.decoder_type == 'pointwise':
                 return self.layers(x)
             else:
@@ -2481,7 +2494,7 @@ class Generator(nn.Module):
         self.proj = nn.Linear(hidden_size, vocab_size, bias=False)
 
     def forward(self, x):
-        return self.proj(x)
+        return F.log_softmax(self.proj(x), dim=-1)
 
 
 class Decoder(nn.Module):
@@ -2518,10 +2531,10 @@ class Decoder(nn.Module):
 
         # use CNN encoded states to initialize final encoder state
         self.bridge = nn.GRU(hidden_size,
-                                hidden_size,
-                                num_layers,
-                                batch_first=True,
-                                dropout=dropout)
+                             hidden_size,
+                             num_layers,
+                             batch_first=True,
+                             dropout=dropout)
 
         self.dropout_layer = nn.Dropout(p=dropout)
         self.pre_output_layer = nn.Linear(hidden_size + hidden_size + emb_size*(1+add_input_skip),

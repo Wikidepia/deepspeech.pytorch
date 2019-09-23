@@ -61,8 +61,9 @@ parser.add_argument('--batch-similar-lens', dest='batch_similar_lens', action='s
 
 parser.add_argument('--pytorch-mel', action='store_true', help='Use pytorch based STFT + MEL')
 parser.add_argument('--pytorch-stft', action='store_true', help='Use pytorch based STFT')
-parser.add_argument('--denoise', action='store_true', help='Use pytorch based STFT')
+parser.add_argument('--denoise', action='store_true', help='Train a denoising head')
 
+parser.add_argument('--use_attention', action='store_true', help='Use attention based decoder instead of CTC')
 
 parser.add_argument('--window-size', default=.02, type=float, help='Window size for spectrogram in seconds')
 parser.add_argument('--window-stride', default=.01, type=float, help='Window stride for spectrogram in seconds')
@@ -473,6 +474,20 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 split_targets.append(targets[offset:offset + size])
                 offset += size
 
+            if args.use_attention:
+                batch_size = inputs.size(0)
+                max_len = max(target_sizes)
+                # use CTC blank as pad token
+                # ctc blank has an index of zero
+                trg = torch.zeros(batch_size,
+                                  max_len)
+                assert len(target_sizes) == batch_size
+                for _, split_target in enumerate(split_targets):
+                    trg[_,:target_sizes[_]] = split_target
+                trg = trg.long.to(device)
+                trg_teacher_forcing = trg[:, :-1]
+                trg_y = trg[:, 1:]
+
             inputs = inputs.to(device)
 
             if args.use_phonemes:
@@ -481,11 +496,23 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                  phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
             elif args.denoise:
                 logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)
+            elif args.use_attention:
+                logits, output_sizes = model(inputs,
+                                            trg=trg_teacher_forcing)
+                # for our purposes they are the same
+                probs = logits
             else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
-            loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
-            loss = loss / inputs.size(0)  # average the loss by minibatch
+            if args.use_attention:
+                loss = criterion(logits.contiguous().view(-1, x.size(-1)),
+                                 trg_y.contiguous().view(-1))
+                loss = loss / sum(target_sizes)  # average the loss by number of tokens
+                loss = loss.to(device)
+            else:
+                loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
+                loss = loss / inputs.size(0)  # average the loss by minibatch
+
             inf = float("inf")
             if args.distributed:
                 loss_value = reduce_tensor(loss, args.world_size).item()
@@ -603,6 +630,20 @@ def calculate_trainval_quality_metrics(checkpoint,
                 split_targets.append(targets[offset:offset + size])
                 offset += size
 
+            if args.use_attention:
+                batch_size = inputs.size(0)
+                max_len = max(target_sizes)
+                # use CTC blank as pad token
+                # ctc blank has an index of zero
+                trg = torch.zeros(batch_size,
+                                  max_len)
+                assert len(target_sizes) == batch_size
+                for _, split_target in enumerate(split_targets):
+                    trg[_,:target_sizes[_]] = split_target
+                trg = trg.long.to(device)
+                trg_teacher_forcing = trg[:, :-1]
+                trg_y = trg[:, 1:]
+
             inputs = inputs.to(device)
 
             if args.use_phonemes:
@@ -611,11 +652,23 @@ def calculate_trainval_quality_metrics(checkpoint,
                  phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
             elif args.denoise:
                 logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)
+            elif args.use_attention:
+                logits, output_sizes = model(inputs,
+                                            trg=trg_teacher_forcing)
+                # for our purposes they are the same
+                probs = logits
             else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
-            loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
-            loss = loss / inputs.size(0)  # average the loss by minibatch
+            if args.use_attention:
+                loss = criterion(logits.contiguous().view(-1, x.size(-1)),
+                                trg_y.contiguous().view(-1))
+                loss = loss / sum(target_sizes)  # average the loss by number of tokens
+                loss = loss.to(device)
+            else:
+                loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
+                loss = loss / inputs.size(0)  # average the loss by minibatch
+
             inf = float("inf")
             if args.distributed:
                 loss_value = reduce_tensor(loss, args.world_size).item()
@@ -740,24 +793,43 @@ class Trainer:
         inputs = inputs.to(device)
         input_sizes = input_sizes.to(device)
 
+        split_targets = []
+        offset = 0
+        for size in target_sizes:
+            split_targets.append(targets[offset:offset + size])
+            offset += size
+
+        if args.use_attention:
+            batch_size = inputs.size(0)
+            max_len = max(target_sizes)
+            # use CTC blank as pad token
+            # ctc blank has an index of zero
+            trg = torch.zeros(batch_size,
+                              max_len)
+            assert len(target_sizes) == batch_size
+            for _, split_target in enumerate(split_targets):
+                trg[_,:target_sizes[_]] = split_target
+            trg = trg.long.to(device)
+            trg_teacher_forcing = trg[:, :-1]
+            trg_y = trg[:, 1:]
+
         if args.use_phonemes:
             (logits, probs,
              output_sizes,
              phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
         elif args.denoise:
             logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)
+        elif args.use_attention:
+            logits, output_sizes = model(inputs,
+                                         trg=trg_teacher_forcing)
+            # for our purposes they are the same
+            probs = logits
         else:
             logits, probs, output_sizes = model(inputs, input_sizes)
 
         assert logits.is_cuda
         assert probs.is_cuda
         assert output_sizes.is_cuda
-
-        split_targets = []
-        offset = 0
-        for size in target_sizes:
-            split_targets.append(targets[offset:offset + size])
-            offset += size
 
         decoded_output, _ = decoder.decode(probs, output_sizes)
         target_strings = decoder.convert_to_strings(split_targets)
@@ -780,7 +852,8 @@ class Trainer:
         if args.use_phonemes:
             phoneme_logits = phoneme_logits.transpose(0, 1)  # TxNxH
 
-        logits = logits.transpose(0, 1)  # TxNxH
+        if not args.use_attention:
+            logits = logits.transpose(0, 1)  # TxNxH
 
         if torch.isnan(logits).any():  # and args.nan == 'zero':
             # work around bad data
@@ -827,6 +900,13 @@ class Trainer:
                 print("WARNING: received an inf CTC loss, setting loss value to 1000")
                 ctc_loss_value = 1000
                 loss_value = 1000
+        elif args.use_attention:
+            loss = criterion(logits.contiguous().view(-1, x.size(-1)),
+                             trg_y.contiguous().view(-1))
+            loss = loss / sum(target_sizes)  # average the loss by number of tokens
+            if args.gradient_accumulation_steps > 1: # average loss by accumulation steps
+                loss = loss / args.gradient_accumulation_steps
+            loss = loss.to(device)
         else:
             loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -1275,8 +1355,12 @@ if __name__ == '__main__':
         optimizer = build_optimizer(args, parameters)
 
     # enorm = ENorm(model.named_parameters(), optimizer, c=1)
+    if args.use_attention:
+        criterion = nn.NLLLoss(size_average=False,
+                               ignore_index=0)  # use ctc blank token as pad token
+    else:
+        criterion = CTCLoss()
 
-    criterion = CTCLoss()
     if args.denoise:
         mask_criterion = SemsegLoss(bce_weight=1.0,
                                     dice_weight=0.0,
@@ -1348,6 +1432,5 @@ if __name__ == '__main__':
         mask_accuracy = AverageMeter()
         mask_losses = AverageMeter()
         ctc_losses = AverageMeter()
-
 
     train(start_epoch, start_iter, start_checkpoint)
