@@ -146,9 +146,10 @@ class BeamCTCDecoder(Decoder):
 
 class GreedyDecoder(Decoder):
     def __init__(self, labels, blank_index=0,
-                 bpe_as_lists=False):
+                 bpe_as_lists=False, self.norm_text=False):
         super(GreedyDecoder, self).__init__(labels, blank_index)
         self.bpe_as_lists = bpe_as_lists
+        self.norm_text = norm_text
 
     def convert_to_strings(self, sequences, sizes=None, remove_repetitions=False, return_offsets=False):
         """Given a list of numeric sequences, returns the corresponding strings"""
@@ -171,18 +172,30 @@ class GreedyDecoder(Decoder):
         else:
             string = ''
         offsets = []
+        prev_token = ''
         for i in range(size):
             char = self.int_to_char[sequence[i].item()]
+
             if char != self.int_to_char[self.blank_index]:
                 # if this char is a repetition and remove_repetitions=true, then skip
                 if remove_repetitions and i != 0 and char == self.int_to_char[sequence[i - 1].item()]:
                     pass
                 elif char == self.labels[self.space_index]:
-                    string += ' '
+                    if type(string) == list:
+                        string.append(' ')
+                    else:
+                        string += ' '
                     offsets.append(i)
                 else:
-                    string += char
+                    if (char == '2') & (self.norm_text):
+                        char = prev_token
+                    if type(string) == list:
+                        string.append(char)
+                    else:
+                        string += char
                     offsets.append(i)
+            prev_token = char
+            
         if self.bpe_as_lists:
             # use from ast import literal_eval
             # to decode

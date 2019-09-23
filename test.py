@@ -31,6 +31,7 @@ parser.add_argument('--data-parallel', dest='data_parallel', action='store_true'
                     help='Use data parallel')
 parser.add_argument('--report-file', metavar='DIR', default='data/test_report.csv', help="Filename to save results")
 parser.add_argument('--bpe-as-lists', action="store_true", help="save BPE results as eval lists")
+parser.add_argument('--norm-text', action="store_true", help="replace 2's")
 
 no_decoder_args = parser.add_argument_group("No Decoder Options", "Configuration options for when no decoder is "
                                                                   "specified")
@@ -82,7 +83,7 @@ if __name__ == '__main__':
                                  beam_width=args.beam_width, num_processes=args.lm_workers)
     elif args.decoder == "greedy":
         decoder = GreedyDecoder(labels, blank_index=labels.index('_'),
-                                bpe_as_lists=args.bpe_as_lists)
+                                bpe_as_lists=args.bpe_as_lists, norm_text=args.norm_text)
     else:
         decoder = None
     target_decoder = GreedyDecoder(labels, blank_index=labels.index('_'))
@@ -135,7 +136,7 @@ if __name__ == '__main__':
         for x in tqdm(range(len(target_strings))):
             transcript, reference = decoded_output[x][0], target_strings[x][0]
 
-            wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript[:2000], reference[:2000])
+            wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
 
             if args.output_path:
                 # add output to data array, and continue
