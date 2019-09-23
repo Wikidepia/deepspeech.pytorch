@@ -63,7 +63,7 @@ parser.add_argument('--pytorch-mel', action='store_true', help='Use pytorch base
 parser.add_argument('--pytorch-stft', action='store_true', help='Use pytorch based STFT')
 parser.add_argument('--denoise', action='store_true', help='Train a denoising head')
 
-parser.add_argument('--use_attention', action='store_true', help='Use attention based decoder instead of CTC')
+parser.add_argument('--use-attention', action='store_true', help='Use attention based decoder instead of CTC')
 
 parser.add_argument('--window-size', default=.02, type=float, help='Window size for spectrogram in seconds')
 parser.add_argument('--window-stride', default=.01, type=float, help='Window stride for spectrogram in seconds')
@@ -484,7 +484,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 assert len(target_sizes) == batch_size
                 for _, split_target in enumerate(split_targets):
                     trg[_,:target_sizes[_]] = split_target
-                trg = trg.long.to(device)
+                trg = trg.long().to(device)
                 trg_teacher_forcing = trg[:, :-1]
                 trg_y = trg[:, 1:]
 
@@ -498,7 +498,8 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)
             elif args.use_attention:
                 logits, output_sizes = model(inputs,
-                                            trg=trg_teacher_forcing)
+                                             lengths=input_sizes,
+                                             trg=trg_teacher_forcing)
                 # for our purposes they are the same
                 probs = logits
             else:
@@ -640,7 +641,7 @@ def calculate_trainval_quality_metrics(checkpoint,
                 assert len(target_sizes) == batch_size
                 for _, split_target in enumerate(split_targets):
                     trg[_,:target_sizes[_]] = split_target
-                trg = trg.long.to(device)
+                trg = trg.long().to(device)
                 trg_teacher_forcing = trg[:, :-1]
                 trg_y = trg[:, 1:]
 
@@ -654,7 +655,8 @@ def calculate_trainval_quality_metrics(checkpoint,
                 logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)
             elif args.use_attention:
                 logits, output_sizes = model(inputs,
-                                            trg=trg_teacher_forcing)
+                                             lengths=input_sizes,
+                                             trg=trg_teacher_forcing)
                 # for our purposes they are the same
                 probs = logits
             else:
@@ -809,7 +811,7 @@ class Trainer:
             assert len(target_sizes) == batch_size
             for _, split_target in enumerate(split_targets):
                 trg[_,:target_sizes[_]] = split_target
-            trg = trg.long.to(device)
+            trg = trg.long().to(device)
             trg_teacher_forcing = trg[:, :-1]
             trg_y = trg[:, 1:]
 
@@ -821,6 +823,7 @@ class Trainer:
             logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)
         elif args.use_attention:
             logits, output_sizes = model(inputs,
+                                         lengths=input_sizes,
                                          trg=trg_teacher_forcing)
             # for our purposes they are the same
             probs = logits
@@ -1306,7 +1309,8 @@ if __name__ == '__main__':
         if args.use_bpe:
             from data.bpe_labels import Labels as BPELabels
             labels = BPELabels(sp_model=args.sp_model,
-                               use_phonemes=False)
+                               use_phonemes=False,
+                               s2s_decoder=args.use_attention)
             # list instead of string
             labels = labels.label_list
         else:
@@ -1356,8 +1360,8 @@ if __name__ == '__main__':
 
     # enorm = ENorm(model.named_parameters(), optimizer, c=1)
     if args.use_attention:
-        criterion = nn.NLLLoss(size_average=False,
-                               ignore_index=0)  # use ctc blank token as pad token
+        criterion = torch.nn.NLLLoss(reduction='none',
+                                     ignore_index=0)  # use ctc blank token as pad token
     else:
         criterion = CTCLoss()
 
@@ -1373,7 +1377,8 @@ if __name__ == '__main__':
     train_dataset = SpectrogramDataset(audio_conf=audio_conf, cache_path=args.cache_dir,
                                        manifest_filepath=args.train_manifest,
                                        labels=labels, normalize=args.norm, augment=args.augment,
-                                       curriculum_filepath=args.curriculum)
+                                       curriculum_filepath=args.curriculum,
+                                       use_attention=args.use_attention)
     test_audio_conf = {**audio_conf,
                        'noise_prob': 0,
                        'aug_prob_8khz':0,
@@ -1387,7 +1392,8 @@ if __name__ == '__main__':
     test_dataset = SpectrogramDataset(audio_conf=test_audio_conf,
                                       cache_path=args.cache_dir,
                                       manifest_filepath=args.val_manifest,
-                                      labels=labels, normalize=args.norm, augment=False)
+                                      labels=labels, normalize=args.norm, augment=False,
+                                      use_attention=args.use_attention)
 
     # if file is specified
     # separate train validation wo domain shift
@@ -1396,7 +1402,8 @@ if __name__ == '__main__':
         trainval_dataset = SpectrogramDataset(audio_conf=test_audio_conf,
                                               cache_path=args.cache_dir,
                                               manifest_filepath=args.train_val_manifest,
-                                              labels=labels, normalize=args.norm, augment=False)
+                                              labels=labels, normalize=args.norm, augment=False,
+                                              use_attention=args.use_attention)
 
     if args.reverse_sort:
         # XXX: A hack to test max memory load.

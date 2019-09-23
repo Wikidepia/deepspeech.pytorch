@@ -36,7 +36,8 @@ supported_rnns = {
     'cnn_inv_bottleneck_repeat_sep_down8': None,
     'cnn_residual_repeat_sep_down8_denoise': None,
     'cnn_residual_repeat_sep_down8_groups8': None,
-    'cnn_residual_repeat_sep_down8_groups8_plain_gru': None
+    'cnn_residual_repeat_sep_down8_groups8_plain_gru': None,
+    'cnn_residual_repeat_sep_down8_groups8_attention': None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -723,7 +724,7 @@ class DeepSpeech(nn.Module):
             x = x.transpose(1, 2).transpose(0, 1).contiguous()
         elif self._rnn_type in ['cnn_residual_repeat_sep_down8_groups8_attention']:
             x = x.squeeze(1)
-            x = self.rnns(x)
+            x = self.rnns(x, trg=trg)
             # just return the result, all processing is done inside
             # no difference between softmax / wo softmax
             return x, output_lengths
@@ -2446,8 +2447,8 @@ class BahdanauAttention(nn.Module):
                  query_size=None):
         super(BahdanauAttention, self).__init__()
 
-        # We assume a bi-directional encoder so key_size is 2*hidden_size
-        key_size = 2 * hidden_size if key_size is None else key_size
+        # We assume a non bi-directional encoder so key_size is 1*hidden_size
+        key_size = 1 * hidden_size if key_size is None else key_size
         query_size = hidden_size if query_size is None else query_size
 
         self.key_layer = nn.Linear(key_size, hidden_size, bias=False)
@@ -2583,8 +2584,7 @@ class Decoder(nn.Module):
         encoder_hidden, encoder_final = self.init_rnn_states(cnn_states)
 
         # initialize decoder hidden state
-        if hidden is None:
-            hidden = encoder_hidden
+        hidden = encoder_hidden
 
         # pre-compute projected encoder hidden states
         # (the "keys" for the attention mechanism)
