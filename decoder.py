@@ -196,7 +196,7 @@ class GreedyDecoder(Decoder):
                     else:
                         string += char
                     offsets.append(i)
-            prev_token = char
+                prev_token = char
             
         if self.bpe_as_lists:
             # use from ast import literal_eval

@@ -31,7 +31,7 @@ parser.add_argument('--data-parallel', dest='data_parallel', action='store_true'
                     help='Use data parallel')
 parser.add_argument('--report-file', metavar='DIR', default='data/test_report.csv', help="Filename to save results")
 parser.add_argument('--bpe-as-lists', action="store_true", help="save BPE results as eval lists")
-parser.add_argument('--norm-text', action="store_true", help="replace 2's")
+parser.add_argument('--norm_text', action="store_true", help="replace 2's")
 
 no_decoder_args = parser.add_argument_group("No Decoder Options", "Configuration options for when no decoder is "
                                                                   "specified")
