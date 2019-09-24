@@ -1244,7 +1244,8 @@ class ResidualRepeatWav2Letter(nn.Module):
             attention = BahdanauAttention(size, query_size=size)
             self.decoder = Decoder(256, size,
                                    self.num_classes, attention,
-                                   num_layers=2, dropout=dropout)
+                                   num_layers=2, dropout=dropout,
+                                   sos_index=self.num_classes-2)
         else:
             raise NotImplementedError('{} decoder not implemented'.format(self.decoder))
 
@@ -2641,9 +2642,7 @@ class Decoder(nn.Module):
         # unroll the decoder RNN for max_len steps
         for i in range(max_len):
             prev_embed = self.trg_embed(trg)
-            if not self.training:
-                print('cat')
-                assert 1==0            
+         
             output, hidden, pre_output = self.forward_step(
                 prev_embed, encoder_output, src_mask, proj_key, hidden)
             #decoder_states.append(output)
@@ -2661,6 +2660,11 @@ class Decoder(nn.Module):
         pre_output_vectors = torch.cat(pre_output_vectors, dim=1)
 
         output = self.generator(pre_output_vectors)
+        # for unification and simplicity, add a 100% probability
+        # that first token is sos token
+        sos_prob = torch.zeros_like(output[:,0:1,:]).to(device)
+        sos_prob[:, 0, self.sos_index] = 1.0
+        output = torch.cat([sos_prob, output], dim=1) 
         return output
 
 

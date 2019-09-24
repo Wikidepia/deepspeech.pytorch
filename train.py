@@ -506,7 +506,11 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
             if args.use_attention:
-                loss = criterion(logits.contiguous().view(-1,
+                # this is kind of murky
+                # you can calculate this using teacher forcing unrolling
+                # or you can just assume
+                # that the smart network will produce outputs of similar length to gt
+                loss = criterion(logits[:, :trg_y.size(1), :].contiguous().view(-1,
                                                           logits.size(-1)),
                                  trg_y.contiguous().view(-1))
                 loss = loss / sum(target_sizes)  # average the loss by number of tokens
@@ -666,9 +670,13 @@ def calculate_trainval_quality_metrics(checkpoint,
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
             if args.use_attention:
-                loss = criterion(logits.contiguous().view(-1,
+                # this is kind of murky
+                # you can calculate this using teacher forcing unrolling
+                # or you can just assume
+                # that the smart network will produce outputs of similar length to gt                
+                loss = criterion(logits[:, :trg_y.size(1), :].contiguous().view(-1,
                                                           logits.size(-1)),
-                                trg_y.contiguous().view(-1))
+                                 trg_y.contiguous().view(-1))
                 loss = loss / sum(target_sizes)  # average the loss by number of tokens
                 loss = loss.to(device)
             else:
