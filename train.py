@@ -445,6 +445,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
     val_cer_sum, val_wer_sum, val_loss_sum = 0, 0, 0
     num_chars, num_words, num_losses = 0, 0, 0
     model.eval()
+        
     with torch.no_grad():
         for i, data in tq(enumerate(test_loader), total=len(test_loader)):
             # use if full phoneme decoding will be required
@@ -498,15 +499,15 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)
             elif args.use_attention:
                 logits, output_sizes = model(inputs,
-                                             lengths=input_sizes,
-                                             trg=trg_teacher_forcing)
+                                             lengths=input_sizes)
                 # for our purposes they are the same
                 probs = logits
             else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
             if args.use_attention:
-                loss = criterion(logits.contiguous().view(-1, x.size(-1)),
+                loss = criterion(logits.contiguous().view(-1,
+                                                          logits.size(-1)),
                                  trg_y.contiguous().view(-1))
                 loss = loss / sum(target_sizes)  # average the loss by number of tokens
                 loss = loss.to(device)
@@ -527,7 +528,10 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
             val_loss_sum += loss_value
             num_losses += 1
 
-            decoded_output, _ = decoder.decode(probs, output_sizes)
+
+            decoded_output, _ = decoder.decode(probs, output_sizes,
+                                               use_attention=args.use_attention)
+
             target_strings = decoder.convert_to_strings(split_targets)
             for x in range(len(target_strings)):
                 transcript, reference = decoded_output[x][0], target_strings[x][0]
@@ -655,15 +659,15 @@ def calculate_trainval_quality_metrics(checkpoint,
                 logits, probs, output_sizes, mask_logits = model(inputs, input_sizes)
             elif args.use_attention:
                 logits, output_sizes = model(inputs,
-                                             lengths=input_sizes,
-                                             trg=trg_teacher_forcing)
+                                             lengths=input_sizes)
                 # for our purposes they are the same
                 probs = logits
             else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
             if args.use_attention:
-                loss = criterion(logits.contiguous().view(-1, x.size(-1)),
+                loss = criterion(logits.contiguous().view(-1,
+                                                          logits.size(-1)),
                                 trg_y.contiguous().view(-1))
                 loss = loss / sum(target_sizes)  # average the loss by number of tokens
                 loss = loss.to(device)
@@ -684,7 +688,9 @@ def calculate_trainval_quality_metrics(checkpoint,
             val_loss_sum += loss_value
             num_losses += 1
 
-            decoded_output, _ = decoder.decode(probs, output_sizes)
+            decoded_output, _ = decoder.decode(probs, output_sizes,
+                                               use_attention=args.use_attention)
+
             target_strings = decoder.convert_to_strings(split_targets)
             for x in range(len(target_strings)):
                 transcript, reference = decoded_output[x][0], target_strings[x][0]
@@ -834,7 +840,10 @@ class Trainer:
         assert probs.is_cuda
         assert output_sizes.is_cuda
 
-        decoded_output, _ = decoder.decode(probs, output_sizes)
+
+        decoded_output, _ = decoder.decode(probs, output_sizes,
+                                            use_attention=args.use_attention)
+
         target_strings = decoder.convert_to_strings(split_targets)
         for x in range(len(target_strings)):
             transcript, reference = decoded_output[x][0], target_strings[x][0]
@@ -904,7 +913,8 @@ class Trainer:
                 ctc_loss_value = 1000
                 loss_value = 1000
         elif args.use_attention:
-            loss = criterion(logits.contiguous().view(-1, x.size(-1)),
+            loss = criterion(logits.contiguous().view(-1,
+                                                      logits.size(-1)),
                              trg_y.contiguous().view(-1))
             loss = loss / sum(target_sizes)  # average the loss by number of tokens
             if args.gradient_accumulation_steps > 1: # average loss by accumulation steps
@@ -1360,7 +1370,7 @@ if __name__ == '__main__':
 
     # enorm = ENorm(model.named_parameters(), optimizer, c=1)
     if args.use_attention:
-        criterion = torch.nn.NLLLoss(reduction='none',
+        criterion = torch.nn.NLLLoss(reduction='sum',
                                      ignore_index=0)  # use ctc blank token as pad token
     else:
         criterion = CTCLoss()
@@ -1372,6 +1382,9 @@ if __name__ == '__main__':
         mask_metric = MaskSimilarity(thresholds=[0.05, 0.1, 0.15])
 
     decoder = GreedyDecoder(labels)
+    print('Label length {}'.format(len(labels)))
+    print(labels)
+
     print('Audio conf')
     print(audio_conf)
     train_dataset = SpectrogramDataset(audio_conf=audio_conf, cache_path=args.cache_dir,

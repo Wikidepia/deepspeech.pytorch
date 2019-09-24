@@ -490,7 +490,7 @@ class DeepSpeech(nn.Module):
                     'dilated_blocks': [],  # no dilation
                     'groups': 8,  # optimal group count, 512 // 12 = 64
                     'decoder_type': 'attention',
-                    'num_classes': num_classes + 2  # also include sos and eos tokens
+                    'num_classes': num_classes  # sos and eos are already included, pad is blank token
                 })
             )
         elif self._rnn_type == 'cnn_residual_repeat_sep_down8_denoise':  # add scale 8
@@ -2544,15 +2544,17 @@ class Decoder(nn.Module):
 
     def forward_step(self, prev_embed, encoder_hidden, src_mask, proj_key, hidden):
         """Perform a single decoder step (1 word)"""
-
         # compute context vector using attention mechanism
         query = hidden[-1].unsqueeze(1)  # [#layers, B, D] -> [B, 1, D]
+
         context, attn_probs = self.attention(
             query=query, proj_key=proj_key,
             value=encoder_hidden, mask=src_mask
         )
+
         # update rnn hidden state
         rnn_input = torch.cat([prev_embed, context], dim=2)
+
         output, hidden = self.rnn(rnn_input, hidden)
 
         pre_output = torch.cat([prev_embed, output, context], dim=2)
@@ -2576,12 +2578,16 @@ class Decoder(nn.Module):
                     cnn_states,
                     trg):
         """Unroll the decoder one step at a time."""
+        device = cnn_states.device
+
         src_mask = torch.ones(cnn_states.size(0),
-                              cnn_states.size(1)).unsqueeze(1)
-        max_len = cnn_states.size(1)
+                              cnn_states.size(1)).unsqueeze(1).to(device)    # .type_as(cnn_states)
+        # during train, max iterations
+        # is limited by teacher forcing
+        max_len = trg.size(1)
 
         trg_embed = self.trg_embed(trg)
-        encoder_hidden, encoder_final = self.init_rnn_states(cnn_states)
+        encoder_output, encoder_hidden = self.init_rnn_states(cnn_states)
 
         # initialize decoder hidden state
         hidden = encoder_hidden
@@ -2589,18 +2595,17 @@ class Decoder(nn.Module):
         # pre-compute projected encoder hidden states
         # (the "keys" for the attention mechanism)
         # this is only done for efficiency
-        proj_key = self.attention.key_layer(encoder_hidden)
+        proj_key = self.attention.key_layer(encoder_output)
 
         # here we store all intermediate hidden states and pre-output vectors
         #decoder_states = []
         pre_output_vectors = []
-
+        # print(max_len, trg_embed.size(), trg)
         # unroll the decoder RNN for max_len steps
         for i in range(max_len):
             prev_embed = trg_embed[:, i].unsqueeze(1)
             output, hidden, pre_output = self.forward_step(
-                prev_embed, encoder_hidden, src_mask, proj_key, hidden,
-                skip=skip, skip_key=skip_key)
+                prev_embed, encoder_output, src_mask, proj_key, hidden)
             #decoder_states.append(output)
             pre_output_vectors.append(pre_output)
 
@@ -2611,20 +2616,23 @@ class Decoder(nn.Module):
 
 
     def inference(self, cnn_states):
+        device = cnn_states.device
 
         batch_size = cnn_states.size(0)
         src_mask = torch.ones(cnn_states.size(0),
-                              cnn_states.size(1)).unsqueeze(1)
+                              cnn_states.size(1)).unsqueeze(1).to(device)  # .type_as(cnn_states)
+        # during inference, max iterations
+        # for very fast speech may be 1 grapheme per window
         max_len = cnn_states.size(1)
 
-        # initial state with sos indices
-        trg = torch.ones(batch_size, 1).fill_(self.sos_index).type_as(encoder_final).long()
-        trg_mask = torch.ones_like(trg)
-
-        encoder_hidden, encoder_final = self.init_rnn_states(cnn_states)
+        encoder_output, encoder_hidden = self.init_rnn_states(cnn_states)
         hidden = encoder_hidden
 
-        proj_key = self.attention.key_layer(encoder_hidden)
+        # initial state with sos indices
+        trg = torch.ones(batch_size, 1).fill_(self.sos_index).long().to(device)     # .type_as(cnn_states)
+        trg_mask = torch.ones_like(trg).to(device)   #  .type_as(cnn_states)
+
+        proj_key = self.attention.key_layer(encoder_output)
 
         # here we store all intermediate hidden states and pre-output vectors
         #decoder_states = []
@@ -2633,15 +2641,20 @@ class Decoder(nn.Module):
         # unroll the decoder RNN for max_len steps
         for i in range(max_len):
             prev_embed = self.trg_embed(trg)
+            if not self.training:
+                print('cat')
+                assert 1==0            
             output, hidden, pre_output = self.forward_step(
-                prev_embed, encoder_hidden, src_mask, proj_key, hidden)
+                prev_embed, encoder_output, src_mask, proj_key, hidden)
             #decoder_states.append(output)
             pre_output_vectors.append(pre_output)
             # we predict from the pre-output layer, which is
             # a combination of Decoder state, prev emb, and context
             prob = self.generator(pre_output[:, -1])
+
             _, next_word = torch.max(prob, dim=1)
-            next_word = next_word.data
+            # next_word = next_word.data
+            next_word = next_word.to(device)
             trg = next_word.unsqueeze(dim=1)
 
         #decoder_states = torch.cat(decoder_states, dim=1)

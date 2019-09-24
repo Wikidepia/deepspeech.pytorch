@@ -157,7 +157,9 @@ class GreedyDecoder(Decoder):
         offsets = [] if return_offsets else None
         for x in xrange(len(sequences)):
             seq_len = sizes[x] if sizes is not None else len(sequences[x])
-            string, string_offsets = self.process_string(sequences[x], seq_len, remove_repetitions)
+            string, string_offsets = self.process_string(sequences[x],
+                                                         seq_len,
+                                                         remove_repetitions)
             strings.append([string])  # We only return one path
             if return_offsets:
                 offsets.append([string_offsets])
@@ -202,7 +204,8 @@ class GreedyDecoder(Decoder):
             string = str(string)
         return string, torch.tensor(offsets, dtype=torch.int)
 
-    def decode(self, probs, sizes=None):
+    def decode(self, probs, sizes=None,
+               use_attention=False):
         """
         Returns the argmax decoding given the probability matrix. Removes
         repeated elements in the sequence, as well as blanks.
@@ -215,6 +218,10 @@ class GreedyDecoder(Decoder):
             offsets: time step per character predicted
         """
         _, max_probs = torch.max(probs, 2)
+        # attention network output typically
+        # may be a bit shorter than CTC network output
+        if use_attention:
+            sizes = [max_probs.size(1)] * max_probs.size(0)
         strings, offsets = self.convert_to_strings(max_probs.view(max_probs.size(0), max_probs.size(1)), sizes,
                                                    remove_repetitions=True, return_offsets=True)
         return strings, offsets
