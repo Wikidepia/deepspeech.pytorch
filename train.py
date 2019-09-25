@@ -445,7 +445,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
     val_cer_sum, val_wer_sum, val_loss_sum = 0, 0, 0
     num_chars, num_words, num_losses = 0, 0, 0
     model.eval()
-        
+
     with torch.no_grad():
         for i, data in tq(enumerate(test_loader), total=len(test_loader)):
             # use if full phoneme decoding will be required
@@ -484,10 +484,10 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                                   max_len)
                 assert len(target_sizes) == batch_size
                 for _, split_target in enumerate(split_targets):
-                    trg[_,:target_sizes[_]] = split_target
+                    trg[_, :target_sizes[_]] = split_target
                 trg = trg.long().to(device)
-                trg_teacher_forcing = trg[:, :-1]
-                trg_y = trg[:, 1:]
+                # trg_teacher_forcing = trg[:, :-1]
+                trg_val = trg
 
             inputs = inputs.to(device)
 
@@ -510,9 +510,10 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 # you can calculate this using teacher forcing unrolling
                 # or you can just assume
                 # that the smart network will produce outputs of similar length to gt
-                loss = criterion(logits[:, :trg_y.size(1), :].contiguous().view(-1,
-                                                          logits.size(-1)),
-                                 trg_y.contiguous().view(-1))
+                short_logits = logits[:, :trg_val.size(1), :].contiguous()
+                loss = criterion(short_logits.view(-1,
+                                                   short_logits.size(-1)),
+                                 trg_val.contiguous().view(-1))
                 loss = loss / sum(target_sizes)  # average the loss by number of tokens
                 loss = loss.to(device)
             else:
@@ -531,7 +532,6 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
             val_loss_sum = (val_loss_sum * 0.998 + loss_value * 0.002)  # discount earlier losses
             val_loss_sum += loss_value
             num_losses += 1
-
 
             decoded_output, _ = decoder.decode(probs, output_sizes,
                                                use_attention=args.use_attention)
@@ -650,8 +650,8 @@ def calculate_trainval_quality_metrics(checkpoint,
                 for _, split_target in enumerate(split_targets):
                     trg[_,:target_sizes[_]] = split_target
                 trg = trg.long().to(device)
-                trg_teacher_forcing = trg[:, :-1]
-                trg_y = trg[:, 1:]
+                # trg_teacher_forcing = trg[:, :-1]
+                trg_val = trg
 
             inputs = inputs.to(device)
 
@@ -673,10 +673,18 @@ def calculate_trainval_quality_metrics(checkpoint,
                 # this is kind of murky
                 # you can calculate this using teacher forcing unrolling
                 # or you can just assume
-                # that the smart network will produce outputs of similar length to gt                
-                loss = criterion(logits[:, :trg_y.size(1), :].contiguous().view(-1,
-                                                          logits.size(-1)),
-                                 trg_y.contiguous().view(-1))
+                # that the smart network will produce outputs of similar length to gt
+
+                # some edge cases in annotation also may cause this to fail miserably
+                # hence a failsafe
+                max_loss_len = min(trg_val.size(1),
+                                   logits.size(1))
+                short_logits = logits[:, :max_loss_len, :].contiguous()
+                short_trg = trg_val[:, :max_loss_len].contiguous()
+
+                loss = criterion(short_logits.view(-1,
+                                                   short_logits.size(-1)),
+                                 short_trg.view(-1))
                 loss = loss / sum(target_sizes)  # average the loss by number of tokens
                 loss = loss.to(device)
             else:
