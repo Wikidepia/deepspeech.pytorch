@@ -878,6 +878,32 @@ class DeepSpeech(nn.Module):
         return model
 
     @staticmethod
+    def add_s2s_decoder_to_model(model,
+                                 labels,
+                                 decoder_layers=2,
+                                 dropout=0.1,):
+        '''Turn a pre-trained model into a model with a s2s decoder
+        '''
+        # Transform a pre-trained model with GRU
+        assert model._rnn_type == 'cnn_residual_repeat_sep_down8_groups8_plain_gru'
+        model._rnn_type = 'cnn_residual_repeat_sep_down8_groups8_attention'
+        model._labels = labels
+
+        num_classes = len(labels)
+        model.rnns.num_classes = num_classes
+        model.rnns.decoder_type = 'attention'
+
+        attention = BahdanauAttention(model._hidden_size,
+                                      query_size=model._hidden_size)
+        model.rnns.decoder = Decoder(256, model._hidden_size,
+                                     num_classes,
+                                     attention,
+                                     num_layers=decoder_layers,
+                                     dropout=dropout,
+                                     sos_index=num_classes-2)
+        return model
+
+    @staticmethod
     def serialize(model, optimizer=None, epoch=None, iteration=None, loss_results=None, checkpoint=None,
                   cer_results=None, wer_results=None, avg_loss=None, meta=None,
                   checkpoint_cer_results=None, checkpoint_wer_results=None, checkpoint_loss_results=None,
@@ -2642,7 +2668,7 @@ class Decoder(nn.Module):
         # unroll the decoder RNN for max_len steps
         for i in range(max_len):
             prev_embed = self.trg_embed(trg)
-         
+
             output, hidden, pre_output = self.forward_step(
                 prev_embed, encoder_output, src_mask, proj_key, hidden)
             #decoder_states.append(output)
@@ -2664,7 +2690,7 @@ class Decoder(nn.Module):
         # that first token is sos token
         sos_prob = torch.zeros_like(output[:,0:1,:]).to(device)
         sos_prob[:, 0, self.sos_index] = 1.0
-        output = torch.cat([sos_prob, output], dim=1) 
+        output = torch.cat([sos_prob, output], dim=1)
         return output
 
 

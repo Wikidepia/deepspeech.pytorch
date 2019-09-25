@@ -1283,6 +1283,19 @@ if __name__ == '__main__':
             audio_conf['pytorch_stft'] = True
             print('Changed audio conf params')
 
+        if args.use_attention:
+            if args.use_bpe:
+                from data.bpe_labels import Labels as BPELabels
+                labels = BPELabels(sp_model=args.sp_model,
+                                use_phonemes=False,
+                                s2s_decoder=args.use_attention)
+                # list instead of string
+                labels = labels.label_list
+
+            model = DeepSpeech.add_s2s_decoder_to_model(model,
+                                                        labels=labels)
+            print('Model transformed to a model with full s2s decoder')
+
         # REMOVE LATER
         # audio_conf['noise_dir'] = '../data/augs/*.wav'
         # audio_conf['noise_prob'] = 0.1
