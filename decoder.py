@@ -146,10 +146,19 @@ class BeamCTCDecoder(Decoder):
 
 class GreedyDecoder(Decoder):
     def __init__(self, labels, blank_index=0,
-                 bpe_as_lists=False, norm_text=False):
+                 bpe_as_lists=False, norm_text=False,
+                 cut_after_eos_token=False,
+                 eos_token=']'):
         super(GreedyDecoder, self).__init__(labels, blank_index)
         self.bpe_as_lists = bpe_as_lists
         self.norm_text = norm_text
+
+        self.cut_after_eos_token = cut_after_eos_token
+        self.end_token = eos_token
+        if self.cut_after_eos_token:
+            if self.end_token not in self.labels:
+                print('End token not in labels! S2S cutting disabled')
+                self.cut_after_eos_token = False
 
     def convert_to_strings(self, sequences, sizes=None, remove_repetitions=False, return_offsets=False):
         """Given a list of numeric sequences, returns the corresponding strings"""
@@ -175,12 +184,15 @@ class GreedyDecoder(Decoder):
             string = ''
         offsets = []
         prev_token = ''
+        cut_triggered = False
         for i in range(size):
             char = self.int_to_char[sequence[i].item()]
 
             if char != self.int_to_char[self.blank_index]:
                 # if this char is a repetition and remove_repetitions=true, then skip
                 if remove_repetitions and i != 0 and char == self.int_to_char[sequence[i - 1].item()]:
+                    pass
+                elif self.cut_after_eos_token and cut_triggered:
                     pass
                 elif char == self.labels[self.space_index]:
                     if type(string) == list:
@@ -195,9 +207,11 @@ class GreedyDecoder(Decoder):
                         string.append(char)
                     else:
                         string += char
+                    if char == self.end_token:
+                        cut_triggered = True                        
                     offsets.append(i)
                 prev_token = char
-            
+
         if self.bpe_as_lists:
             # use from ast import literal_eval
             # to decode

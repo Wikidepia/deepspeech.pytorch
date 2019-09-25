@@ -1410,7 +1410,10 @@ if __name__ == '__main__':
                                     mse_weight=0.0)
         mask_metric = MaskSimilarity(thresholds=[0.05, 0.1, 0.15])
 
-    decoder = GreedyDecoder(labels)
+    decoder = GreedyDecoder(labels,
+                            cut_after_eos_token=args.use_attention,
+                            eos_token=']')
+
     print('Label length {}'.format(len(labels)))
     print(labels)
 
