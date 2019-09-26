@@ -736,7 +736,7 @@ def calculate_trainval_quality_metrics(checkpoint,
                 probs = logits
             elif args.double_supervision:
                 ctc_logits, s2s_logits, output_sizes = model(inputs,
-                                                            lengths=input_sizes)
+                                                             lengths=input_sizes)
                 # s2s decoder is the final decoder
                 probs = s2s_logits
             else:
@@ -1066,7 +1066,7 @@ class Trainer:
                                      trg_y.contiguous().view(-1))
             # average the loss by number of tokens
             # multiply by 10 for weight
-            s2s_loss = 10 * s2s_loss / sum(s2s_target_sizes)
+            s2s_loss = 1 * s2s_loss / sum(s2s_target_sizes)
             s2s_loss = s2s_loss.to(device)
 
             loss = ctc_loss + s2s_loss
