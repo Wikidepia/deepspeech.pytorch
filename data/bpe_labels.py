@@ -33,6 +33,43 @@ class Labels:
                  sp_model='data/spm_train_v05_cleaned_asr_10s_phoneme.model',
                  sp_model_phoneme='data/phoneme_spm_train_v05_cleaned_asr_10s_phoneme.model',
                  sp_space_token='▁',
+                 s2s_decoder=False,
+                 double_supervision=False):
+        kwargs = {
+            'use_phonemes': use_phonemes,
+            'sp_model': sp_model,
+            'sp_model_phoneme': sp_model_phoneme,
+            'sp_space_token': sp_space_token,
+            's2s_decoder': s2s_decoder,
+        }
+        if use_phonemes:
+            raise NotImplementedError('Phonemes not backported')
+        if (s2s_decoder and not double_supervision) or (not s2s_decoder and not double_supervision):
+            # just an ordinary decoder
+            self.labels = _Labels(**kwargs)
+        elif not s2s_decoder and double_supervision:
+            self.labels = [_Labels({**kwargs, 's2s_decoder': False}),
+                           _Labels({**kwargs, 's2s_decoder': True})]
+        elif s2s_decoder and double_supervision:
+            raise NotImplementedError('This case should be impossible')
+
+    def parse(self, text):
+        if type(self.labels) != list:
+            # ordinary case pass through
+            return self.labels.parse(text)
+        else:
+            out = []
+            for _labels_ in self.labels:
+                out.append(_labels_.parse(text))
+            return out
+
+
+class _Labels:
+    def __init__(self,
+                 use_phonemes=False,
+                 sp_model='data/spm_train_v05_cleaned_asr_10s_phoneme.model',
+                 sp_model_phoneme='data/phoneme_spm_train_v05_cleaned_asr_10s_phoneme.model',
+                 sp_space_token='▁',
                  s2s_decoder=False):
 
         self.use_phonemes = use_phonemes

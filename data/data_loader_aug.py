@@ -522,7 +522,9 @@ TS_PHONEME_CACHE = {}
 
 class SpectrogramDataset(Dataset, SpectrogramParser):
     def __init__(self, audio_conf, manifest_filepath, cache_path, labels, normalize=False, augment=False,
-                 max_items=None, curriculum_filepath=None, use_attention=False):
+                 max_items=None, curriculum_filepath=None,
+                use_attention=False,
+                double_supervision=False):
         """
         Dataset that loads tensors via a csv containing file paths to audio files and transcripts separated by
         a comma. Each new line is a different sample. Example below:
@@ -556,7 +558,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             from data.bpe_labels import Labels as BPELabels
             self.labels = BPELabels(sp_model=audio_conf.get('sp_model', ''),  # will raise error if model is invalid
                                     use_phonemes=False,
-                                    s2s_decoder=use_attention)
+                                    s2s_decoder=use_attention,
+                                    double_supervision=double_supervision)
         else:
             self.labels = Labels(labels)
 
@@ -845,6 +848,52 @@ def _collate_fn(batch):
     return inputs, targets, filenames, input_percentages, target_sizes
 
 
+def _collate_fn(batch):
+    def func(p):
+        return p[0].size(1)
+
+    batch = sorted(batch, key=lambda sample: sample[0].size(1), reverse=True)
+    longest_sample = max(batch, key=func)[0]
+    freq_size = longest_sample.size(0)
+    minibatch_size = len(batch)
+    max_seqlength = longest_sample.size(1)
+    inputs = torch.zeros(minibatch_size, 1, freq_size, max_seqlength)
+    input_percentages = torch.FloatTensor(minibatch_size)
+    filenames = []
+
+    ctc_target_sizes = torch.IntTensor(minibatch_size)
+    ctc_targets = []
+
+    s2s_target_sizes = torch.IntTensor(minibatch_size)
+    s2s_targets = []
+
+    for x in range(minibatch_size):
+        sample = batch[x]
+        tensor = sample[0]
+        target = sample[1]
+
+        ctc_target = target[0]
+        s2s_target = target[1]
+
+        filenames.append(sample[2])
+        seq_length = tensor.size(1)
+        inputs[x][0].narrow(1, 0, seq_length).copy_(tensor)
+        input_percentages[x] = seq_length / float(max_seqlength)
+
+        ctc_target_sizes[x] = len(ctc_target)
+        ctc_targets.extend(ctc_target)
+        s2s_target_sizes[x] = len(s2s_target)
+        s2s_targets.extend(s2s_target)
+
+    ctc_targets = torch.IntTensor(ctc_targets)
+    s2s_targets = torch.IntTensor(s2s_targets)
+
+    return (inputs,
+            ctc_targets, s2s_targets,
+            filenames, input_percentages,
+            ctc_targets, s2s_targets)
+
+
 def _collate_fn_denoise(batch):
     def func(p):
         return p[0][0].size(1)
@@ -920,6 +969,15 @@ class AudioDataLoader(DataLoader):
         """
         super(AudioDataLoader, self).__init__(*args, **kwargs)
         self.collate_fn = _collate_fn
+
+
+class AudioDataLoaderDouble(DataLoader):
+    def __init__(self, *args, **kwargs):
+        """
+        Creates a data loader for AudioDatasets.
+        """
+        super(AudioDataLoader, self).__init__(*args, **kwargs)
+        self.collate_fn = _collate_fn_double
 
 
 class AudioDataLoaderDenoise(DataLoader):

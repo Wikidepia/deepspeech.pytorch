@@ -64,6 +64,7 @@ parser.add_argument('--pytorch-stft', action='store_true', help='Use pytorch bas
 parser.add_argument('--denoise', action='store_true', help='Train a denoising head')
 
 parser.add_argument('--use-attention', action='store_true', help='Use attention based decoder instead of CTC')
+parser.add_argument('--double-supervision', action='store_true', help='Use both CTC and attention in sequence')
 
 parser.add_argument('--window-size', default=.02, type=float, help='Window size for spectrogram in seconds')
 parser.add_argument('--window-stride', default=.01, type=float, help='Window stride for spectrogram in seconds')
@@ -223,13 +224,43 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
+class MultipleOptimizer(object):
+    def __init__(self, op):
+        self.optimizers = op
+
+    def zero_grad(self):
+        for op in self.optimizers:
+            op.zero_grad()
+
+    def step(self):
+        for op in self.optimizers:
+            op.step()
+
+
 def build_optimizer(args_, parameters_):
     # import aggmo
     # return aggmo.AggMo(model.parameters(), args_.lr, betas=[0, 0.6, 0.9])
-    if args_.weight_decay>0:
+    if args_.weight_decay > 0:
         print('Using weight decay {} for SGD'.format(args_.weight_decay))
 
-    if args_.optimizer == 'sgd':
+    if args.double_supervision:
+        print('Using double supervision, SGD with clipping for CTC, ADAM for s2s')
+        adam_lr = args_.lr / 10
+        sgd_lr = args_.lr
+        print('SGD LR {} / ADAM LR {}'.format(sgd_lr, adam_lr))
+
+        # unclear whether to separate params
+        # _ctc_params = [param for name, param in parameters_.iteritems()
+        #              if 'foo' in name]
+
+        ctc_optimizer = torch.optim.SGD(parameters_,
+                                        lr=args_.lr,
+                                        momentum=args_.momentum,
+                                        nesterov=True)
+        s2s_optimizer = torch.optim.Adam(parameters_,
+                                         lr=adam_lr)
+        return MultipleOptimizer([ctc_optimizer, s2s_optimizer])
+    elif args_.optimizer == 'sgd':
         print('Using SGD')
         try:
             base_optimizer = torch.optim.SGD(parameters_, lr=args_.lr,
@@ -245,8 +276,8 @@ def build_optimizer(args_, parameters_):
         except:
             # wo nesterov
             return torch.optim.SGD(parameters_, lr=args_.lr,
-                        momentum=args_.momentum, nesterov=False,
-                        weight_decay=args_.weight_decay)
+                                   momentum=args_.momentum, nesterov=False,
+                                   weight_decay=args_.weight_decay)
     elif args_.optimizer=='adam':
         print('Using ADAM')
         return torch.optim.Adam(parameters_, lr=args_.lr)
@@ -422,13 +453,26 @@ class LRPlotWindow:
 def get_lr():
     if args.use_lookahead:
         return optimizer.optimizer.state_dict()['param_groups'][0]['lr']
-    optim_state = optimizer.state_dict()
+    if args.double_supervision:
+        # SGD state
+        optim_state = optimizer.optimizers[0].state_dict()
+    else:
+        optim_state = optimizer.state_dict()
     return optim_state['param_groups'][0]['lr']
 
 
 def set_lr(lr):
     print('Learning rate annealed to: {lr:.6g}'.format(lr=lr))
-    if args.use_lookahead:
+    if args.double_supervision:
+        # ADAM's LR typically is set 10x lower than SGD
+        sgd_optim_state = optimizer.optimizers[0].optimizer.state_dict()
+        sgd_optim_state['param_groups'][0]['lr'] = lr
+        optimizer.optimizers[0].optimizer.load_state_dict(sgd_optim_state)
+
+        adam_optim_state = optimizer.optimizers[1].optimizer.state_dict()
+        adam_optim_state['param_groups'][0]['lr'] = lr / 10
+        optimizer.optimizers[1].optimizer.load_state_dict(adam_optim_state)
+    elif args.use_lookahead:
         optim_state = optimizer.optimizer.state_dict()
         optim_state['param_groups'][0]['lr'] = lr
         optimizer.optimizer.load_state_dict(optim_state)
@@ -464,6 +508,11 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                  input_percentages,
                  target_sizes,
                  mask_targets) = data
+            elif args.double_supervision:
+                (inputs,
+                 _targets, targets,
+                 filenames, input_percentages,
+                 _target_sizes, target_sizes) = data
             else:
                 inputs, targets, filenames, input_percentages, target_sizes = data
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
@@ -502,6 +551,11 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                                              lengths=input_sizes)
                 # for our purposes they are the same
                 probs = logits
+            elif args.double_supervision:
+                ctc_logits, s2s_logits, output_sizes = model(inputs,
+                                                            lengths=input_sizes)
+                # s2s decoder is the final decoder
+                probs = s2s_logits
             else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
@@ -516,6 +570,10 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                                  trg_val.contiguous().view(-1))
                 loss = loss / sum(target_sizes)  # average the loss by number of tokens
                 loss = loss.to(device)
+            elif args.double_supervision:
+                # do not bother with loss here
+                loss = 0
+                loss_value = 0
             else:
                 loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
                 loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -523,6 +581,8 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
             inf = float("inf")
             if args.distributed:
                 loss_value = reduce_tensor(loss, args.world_size).item()
+            elif args.double_supervision:
+                pass
             else:
                 loss_value = loss.item()
             if loss_value == inf or loss_value == -inf:
@@ -534,7 +594,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
             num_losses += 1
 
             decoded_output, _ = decoder.decode(probs, output_sizes,
-                                               use_attention=args.use_attention)
+                                               use_attention=args.use_attention or args.double_supervision)
 
             target_strings = decoder.convert_to_strings(split_targets)
             for x in range(len(target_strings)):
@@ -564,6 +624,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
 
         val_wer = 100 * val_wer_sum / num_words
         val_cer = 100 * val_cer_sum / num_chars
+
         print('Validation Summary Epoch: [{0}]\t'
               'Average WER {wer:.3f}\t'
               'Average CER {cer:.3f}\t'.format(epoch + 1, wer=val_wer, cer=val_cer))
@@ -627,6 +688,11 @@ def calculate_trainval_quality_metrics(checkpoint,
                  input_percentages,
                  target_sizes,
                  mask_targets) = data
+            elif args.double_supervision:
+                (inputs,
+                 _targets, targets,
+                 filenames, input_percentages,
+                 _target_sizes, target_sizes) = data
             else:
                 inputs, targets, filenames, input_percentages, target_sizes = data
 
@@ -648,7 +714,7 @@ def calculate_trainval_quality_metrics(checkpoint,
                                   max_len)
                 assert len(target_sizes) == batch_size
                 for _, split_target in enumerate(split_targets):
-                    trg[_,:target_sizes[_]] = split_target
+                    trg[_, :target_sizes[_]] = split_target
                 trg = trg.long().to(device)
                 # trg_teacher_forcing = trg[:, :-1]
                 trg_val = trg
@@ -666,6 +732,11 @@ def calculate_trainval_quality_metrics(checkpoint,
                                              lengths=input_sizes)
                 # for our purposes they are the same
                 probs = logits
+            elif args.double_supervision:
+                ctc_logits, s2s_logits, output_sizes = model(inputs,
+                                                            lengths=input_sizes)
+                # s2s decoder is the final decoder
+                probs = s2s_logits
             else:
                 logits, probs, output_sizes = model(inputs, input_sizes)
 
@@ -687,6 +758,10 @@ def calculate_trainval_quality_metrics(checkpoint,
                                  short_trg.view(-1))
                 loss = loss / sum(target_sizes)  # average the loss by number of tokens
                 loss = loss.to(device)
+            elif args.double_supervision:
+                # do not bother with loss here
+                loss = 0
+                loss_value = 0
             else:
                 loss = criterion(logits.transpose(0, 1), targets, output_sizes.cpu(), target_sizes)
                 loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -705,7 +780,7 @@ def calculate_trainval_quality_metrics(checkpoint,
             num_losses += 1
 
             decoded_output, _ = decoder.decode(probs, output_sizes,
-                                               use_attention=args.use_attention)
+                                               use_attention=args.use_attention or args.double_supervision)
 
             target_strings = decoder.convert_to_strings(split_targets)
             for x in range(len(target_strings)):
@@ -736,6 +811,7 @@ def calculate_trainval_quality_metrics(checkpoint,
 
         val_wer = 100 * val_wer_sum / num_words
         val_cer = 100 * val_cer_sum / num_chars
+
         print('TrainVal Summary Epoch: [{0}]\t'
               'Average WER {wer:.3f}\t'
               'Average CER {cer:.3f}\t'.format(epoch + 1, wer=val_wer, cer=val_cer))
@@ -807,6 +883,11 @@ class Trainer:
              mask_targets) = data
 
             mask_targets = mask_targets.squeeze(1).to(device)
+        elif args.double_supervision:
+            (inputs,
+             targets, s2s_targets,
+             filenames, input_percentages,
+             target_sizes, s2s_targets) = data
         else:
             inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
@@ -822,6 +903,26 @@ class Trainer:
         for size in target_sizes:
             split_targets.append(targets[offset:offset + size])
             offset += size
+
+        if args.double_supervision:
+            split_s2s_targets = []
+            offset = 0
+            for size in s2s_target_sizes:
+                split_s2s_targets.append(s2s_targets[offset:offset + size])
+                offset += size
+
+            batch_size = inputs.size(0)
+            max_len = max(s2s_target_sizes)
+            # use CTC blank as pad token
+            # ctc blank has an index of zero
+            trg = torch.zeros(batch_size,
+                              max_len)
+            assert len(s2s_target_sizes) == batch_size
+            for _, split_target in enumerate(split_s2s_targets):
+                trg[_,:s2s_target_sizes[_]] = split_target
+            trg = trg.long().to(device)
+            trg_teacher_forcing = trg[:, :-1]
+            trg_y = trg[:, 1:]
 
         if args.use_attention:
             batch_size = inputs.size(0)
@@ -849,6 +950,12 @@ class Trainer:
                                          trg=trg_teacher_forcing)
             # for our purposes they are the same
             probs = logits
+        elif args.double_supervision:
+            ctc_logits, s2s_logits, output_sizes = model(inputs,
+                                                         lengths=input_sizes,
+                                                         trg=trg_teacher_forcing)
+            # s2s decoder is the final decoder
+            probs = s2s_logits
         else:
             logits, probs, output_sizes = model(inputs, input_sizes)
 
@@ -856,11 +963,14 @@ class Trainer:
         assert probs.is_cuda
         assert output_sizes.is_cuda
 
-
         decoded_output, _ = decoder.decode(probs, output_sizes,
-                                            use_attention=args.use_attention)
+                                            use_attention=args.use_attention or args.double_supervision)
 
-        target_strings = decoder.convert_to_strings(split_targets)
+        if args.double_supervision:
+            target_strings = decoder.convert_to_strings(split_s2s_targets)
+        else:
+            target_strings = decoder.convert_to_strings(split_targets)
+
         for x in range(len(target_strings)):
             transcript, reference = decoded_output[x][0], target_strings[x][0]
             wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
@@ -936,6 +1046,33 @@ class Trainer:
             if args.gradient_accumulation_steps > 1: # average loss by accumulation steps
                 loss = loss / args.gradient_accumulation_steps
             loss = loss.to(device)
+        elif args.double_supervision:
+            ctc_loss = ctc_criterion(ctc_logits,
+                                     targets,
+                                     output_sizes.cpu(),
+                                     target_sizes)
+            ctc_loss = ctc_loss / inputs.size(0)  # average the loss by minibatch
+
+            s2s_loss = s2s_criterion(s2s_logits.contiguous().view(-1,
+                                                                  s2s_logits.size(-1)),
+                                     trg_y.contiguous().view(-1))
+            # average the loss by number of tokens
+            # multiply by 10 for weight
+            s2s_loss = 10 * loss / sum(s2s_target_sizes)
+
+            loss = ctc_loss + mask_loss
+
+            inf = float("inf")
+            if args.distributed:
+                loss_value = reduce_tensor(loss, args.world_size).item()
+            else:
+                loss_value = loss.item() * args.gradient_accumulation_steps
+
+            ctc_loss_value = ctc_loss.item()
+            if ctc_loss_value == inf or ctc_loss_value == -inf:
+                print("WARNING: received an inf CTC loss, setting loss value to 1000")
+                ctc_loss_value = 1000
+                loss_value = 1000
         else:
             loss = criterion(logits, targets, output_sizes.cpu(), target_sizes)
             loss = loss / inputs.size(0)  # average the loss by minibatch
@@ -956,12 +1093,18 @@ class Trainer:
 
         loss_value = float(loss_value)
         losses.update(loss_value, inputs.size(0))
+
         if args.denoise:
             mask_accuracy.update(mask_metric(mask_logits, mask_targets).item(),
                                  inputs.size(0))
             mask_losses.update(mask_loss.item(),
                                inputs.size(0))
             ctc_losses.update(ctc_loss_value,
+                              inputs.size(0))
+        elif args.double_supervision:
+            ctc_losses.update(ctc_loss_value,
+                              inputs.size(0))
+            s2s_losses.update(s2s_loss.item(),
                               inputs.size(0))
 
         # update_curriculum
@@ -979,17 +1122,17 @@ class Trainer:
             # only once each N epochs
             if args.max_norm > 0:
                 if epoch < args.norm_warmup_epochs:
-                    # warmup, always do clipping
-
                     if lr_clipping:
+                        raise ValueError('LEGACY')
                         clip_coef = calc_grad_norm(model.parameters(),
-                                                args.max_norm)
+                                                   args.max_norm)
                         underlying_lr = get_lr()
                         set_lr(underlying_lr * clip_coef)
                     else:
                         clip_grad_norm_(model.parameters(),
                                         args.max_norm)
                 else:
+                    raise ValueError('LEGACY')
                     # clip only when gradients explode
                     if loss_value == inf or loss_value == -inf:
                         clip_grad_norm_(model.parameters(),
@@ -1011,17 +1154,28 @@ class Trainer:
         if not args.silent:
             if args.denoise:
                 print('GPU-{0} Epoch {1} [{2}/{3}]\t'
-                    'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
-                    'Data {data_time.val:.2f} ({data_time.avg:.2f})\t'
-                    'Loss {loss.val:.2f} ({loss.avg:.2f})\t'
-                    'CTC Loss {ctc_losses.val:.2f} ({ctc_losses.avg:.2f})\t'
-                    'Mask Loss {mask_losses.val:.2f} ({mask_losses.avg:.2f})\t'
-                    'Mask {mask_accuracy.val:.2f} ({mask_accuracy.avg:.2f})\t'.format(
-                    args.gpu_rank or VISIBLE_DEVICES[0],
-                    epoch + 1, batch_id + 1, len(train_sampler),
-                    batch_time=batch_time, data_time=data_time, loss=losses,
-                    mask_losses=mask_losses, ctc_losses=ctc_losses,
-                    mask_accuracy=mask_accuracy))
+                      'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
+                      'Data {data_time.val:.2f} ({data_time.avg:.2f})\t'
+                      'Loss {loss.val:.2f} ({loss.avg:.2f})\t'
+                      'CTC Loss {ctc_losses.val:.2f} ({ctc_losses.avg:.2f})\t'
+                      'Mask Loss {mask_losses.val:.2f} ({mask_losses.avg:.2f})\t'
+                      'Mask {mask_accuracy.val:.2f} ({mask_accuracy.avg:.2f})\t'.format(
+                      args.gpu_rank or VISIBLE_DEVICES[0],
+                      epoch + 1, batch_id + 1, len(train_sampler),
+                      batch_time=batch_time, data_time=data_time, loss=losses,
+                      mask_losses=mask_losses, ctc_losses=ctc_losses,
+                      mask_accuracy=mask_accuracy))
+            elif args.double_supervision:
+                print('GPU-{0} Epoch {1} [{2}/{3}]\t'
+                      'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
+                      'Data {data_time.val:.2f} ({data_time.avg:.2f})\t'
+                      'Loss {loss.val:.2f} ({loss.avg:.2f})\t'
+                      'CTC Loss {ctc_losses.val:.2f} ({ctc_losses.avg:.2f})\t'
+                      'S2S Loss {s2s_losses.val:.2f} ({s2s_losses.avg:.2f})\t'.format(
+                      args.gpu_rank or VISIBLE_DEVICES[0],
+                      epoch + 1, batch_id + 1, len(train_sampler),
+                      batch_time=batch_time, data_time=data_time, loss=losses,
+                      ctc_losses=ctc_losses, ctc_losses=s2s_losses))
             else:
                 print('GPU-{0} Epoch {1} [{2}/{3}]\t'
                     'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
@@ -1201,11 +1355,14 @@ def train(from_epoch, from_iter, from_checkpoint):
 if __name__ == '__main__':
     args = parser.parse_args()
     assert args.use_phonemes + args.denoise < 2
+    assert args.double_supervision + args.use_attention < 2
     # упячка, я идиот, убейте меня кто-нибудь
     if args.use_phonemes:
         from data.data_loader_aug import AudioDataLoaderPhoneme as AudioDataLoader
     elif args.denoise:
         from data.data_loader_aug import AudioDataLoaderDenoise as AudioDataLoader
+    elif args.double_supervision:
+        from data.data_loader_aug import AudioDataLoaderDouble as AudioDataLoader
     else:
         from data.data_loader_aug import AudioDataLoader
 
@@ -1349,9 +1506,14 @@ if __name__ == '__main__':
             from data.bpe_labels import Labels as BPELabels
             labels = BPELabels(sp_model=args.sp_model,
                                use_phonemes=False,
-                               s2s_decoder=args.use_attention)
+                               s2s_decoder=args.use_attention or args.double_supervision,
+                               double_supervision=False)
             # list instead of string
             labels = labels.label_list
+            # in case of double supervision just use the longer
+            # i.e. s2s = blank(pad) + base_num + space + eos + sos
+            # ctc      = blank(pad) + base_num + space + 2
+            # len(ctc) = len(s2s) - 1
         else:
             with open(args.labels_path) as label_file:
                 # labels is a string
@@ -1373,8 +1535,7 @@ if __name__ == '__main__':
                           aug_type=args.aug_type,
                           pytorch_mel=args.pytorch_mel,
                           pytorch_stft=args.pytorch_stft,
-                          denoise=args.denoise
-                          )
+                          denoise=args.denoise)
 
         if args.use_phonemes:
             audio_conf['phoneme_count'] = len(phoneme_map)
@@ -1401,6 +1562,10 @@ if __name__ == '__main__':
     if args.use_attention:
         criterion = torch.nn.NLLLoss(reduction='sum',
                                      ignore_index=0)  # use ctc blank token as pad token
+    elif args.double_supervision:
+        ctc_criterion = CTCLoss()
+        s2s_criterion = torch.nn.NLLLoss(reduction='sum',
+                                         ignore_index=0)  # use ctc blank token as pad token
     else:
         criterion = CTCLoss()
 
@@ -1410,8 +1575,10 @@ if __name__ == '__main__':
                                     mse_weight=0.0)
         mask_metric = MaskSimilarity(thresholds=[0.05, 0.1, 0.15])
 
+    # if double supervision used, s2s head is the last one
+    # and actually partakes in the decoding
     decoder = GreedyDecoder(labels,
-                            cut_after_eos_token=args.use_attention,
+                            cut_after_eos_token=args.use_attention or args.double_supervision,
                             eos_token=']')
 
     print('Label length {}'.format(len(labels)))
@@ -1423,7 +1590,8 @@ if __name__ == '__main__':
                                        manifest_filepath=args.train_manifest,
                                        labels=labels, normalize=args.norm, augment=args.augment,
                                        curriculum_filepath=args.curriculum,
-                                       use_attention=args.use_attention)
+                                       use_attention=args.use_attention,
+                                       double_supervision=args.double_supervision)
     test_audio_conf = {**audio_conf,
                        'noise_prob': 0,
                        'aug_prob_8khz':0,
@@ -1434,21 +1602,27 @@ if __name__ == '__main__':
     print('Test audio conf')
     print(test_audio_conf)
     # no augs on test
+    # on test, even in case of double supervision
+    # we just need s2s data to validate
     test_dataset = SpectrogramDataset(audio_conf=test_audio_conf,
                                       cache_path=args.cache_dir,
                                       manifest_filepath=args.val_manifest,
                                       labels=labels, normalize=args.norm, augment=False,
-                                      use_attention=args.use_attention)
+                                      use_attention=args.use_attention or args.double_supervision,
+                                      double_supervision=False)
 
     # if file is specified
     # separate train validation wo domain shift
     # also wo augs
+    # on test, even in case of double supervision
+    # we just need s2s data to validate
     if args.train_val_manifest != '':
         trainval_dataset = SpectrogramDataset(audio_conf=test_audio_conf,
                                               cache_path=args.cache_dir,
                                               manifest_filepath=args.train_val_manifest,
                                               labels=labels, normalize=args.norm, augment=False,
-                                              use_attention=args.use_attention)
+                                              use_attention=args.use_attention or args.double_supervision,
+                                              double_supervision=False)
 
     if args.reverse_sort:
         # XXX: A hack to test max memory load.
@@ -1484,5 +1658,9 @@ if __name__ == '__main__':
         mask_accuracy = AverageMeter()
         mask_losses = AverageMeter()
         ctc_losses = AverageMeter()
+
+    if args.double_supervision:
+        ctc_losses = AverageMeter()
+        s2s_losses = AverageMeter()
 
     train(start_epoch, start_iter, start_checkpoint)

@@ -37,7 +37,8 @@ supported_rnns = {
     'cnn_residual_repeat_sep_down8_denoise': None,
     'cnn_residual_repeat_sep_down8_groups8': None,
     'cnn_residual_repeat_sep_down8_groups8_plain_gru': None,
-    'cnn_residual_repeat_sep_down8_groups8_attention': None
+    'cnn_residual_repeat_sep_down8_groups8_attention': None,
+    'cnn_residual_repeat_sep_down8_groups8_double_supervision': None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -493,6 +494,28 @@ class DeepSpeech(nn.Module):
                     'num_classes': num_classes  # sos and eos are already included, pad is blank token
                 })
             )
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8_groups8_double_supervision':
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable': True,
+                    'add_downsample': 4,
+                    'dilated_blocks': [],  # no dilation
+                    'groups': 8,  # optimal group count, 512 // 12 = 64
+                    'decoder_type': 'double_supervision',
+                    'num_classes': num_classes  # sos and eos are already included, pad is blank token
+                })
+            )
         elif self._rnn_type == 'cnn_residual_repeat_sep_down8_denoise':  # add scale 8
             size = rnn_hidden_size
             self.rnns = ResidualRepeatWav2Letter(
@@ -728,6 +751,12 @@ class DeepSpeech(nn.Module):
             # just return the result, all processing is done inside
             # no difference between softmax / wo softmax
             return x, output_lengths
+        elif self._rnn_type in ['cnn_residual_repeat_sep_down8_groups8_double_supervision']:
+            x = x.squeeze(1)
+            ctc_out, s2s_out = self.rnns(x, trg=trg)
+            # just return the result, all processing is done inside
+            # no difference between softmax / wo softmax
+            return ctc_out, s2s_out, output_lengths
         elif self._rnn_type == 'cnn_residual_repeat_sep_down8_denoise':
             x = x.squeeze(1)
             x, denoise_mask = self.rnns(x)
@@ -786,7 +815,8 @@ class DeepSpeech(nn.Module):
                               'cnn_inv_bottleneck_repeat_sep_down8',
                               'cnn_residual_repeat_sep_down8_groups8',
                               'cnn_residual_repeat_sep_down8_groups8_plain_gru',
-                              'cnn_residual_repeat_sep_down8_groups8_attention']:
+                              'cnn_residual_repeat_sep_down8_groups8_attention',
+                              'cnn_residual_repeat_sep_down8_groups8_double_supervision']:
             for m in self.rnns.modules():
                 if type(m) == nn.modules.conv.Conv1d:
                     seq_len = ((seq_len + 2 * m.padding[0] - m.dilation[0] * (m.kernel_size[0] - 1) - 1) / m.stride[0] + 1)
@@ -1272,6 +1302,47 @@ class ResidualRepeatWav2Letter(nn.Module):
                                    self.num_classes, attention,
                                    num_layers=2, dropout=dropout,
                                    sos_index=self.num_classes-2)
+        elif self.decoder_type == 'double_supervision':
+            # in case of double supervision just use the longer
+            # i.e. s2s = blank(pad) + base_num + space + eos + sos
+            # ctc      = blank(pad) + base_num + space + 2
+            # len(ctc) = len(s2s) - 1
+            # s2s is the last one
+
+            # retain the large last kernel for now
+            # make overall size smaller though
+            kwargs = {
+                '_in': cnn_width, 'out': size, 'kernel_size': 31,
+                'padding': 15, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
+                'nonlinearity': nn.ReLU(inplace=True),
+                'se_ratio': 0, 'skip': False, 'repeat': 1
+            }
+            if self.groups > 1: kwargs['groups'] = self.groups
+            modules.extend([Block(**kwargs)])  # no skips and attention
+
+            # a CTC decoder module
+            rnn_kwargs = {
+                'input_size': size, 'hidden_size': size, 'rnn_type': nn.GRU,
+                'bidirectional': True, 'batch_norm': True, 'batch_first': False
+            }
+            rnns = []
+            for _ in range(2):
+                rnn = BatchRNN(**rnn_kwargs)
+                rnns.append(rnn)
+            self.ctc_decoder = nn.Sequential(*rnns)
+            self.ctc_fc = nn.Conv1d(in_channels=size,
+                                    out_channels=self.num_classes - 1,  # exclude sos and eos but include 2
+                                    kernel_size=1)
+
+            # a slim S2S post-processing module
+            # size serves as hidden_size of all GRU models
+            attention = BahdanauAttention(size, query_size=size)
+            self.s2s_decoder = Decoder(256, size,
+                                       self.num_classes, attention,
+                                       num_encoder_layers=1, # shorter encoder because of ctc decoder
+                                       num_decoder_layers=2, dropout=dropout,
+                                       sos_index=self.num_classes-2)
+            # s2s already contains a generator "fc" module inside
         else:
             raise NotImplementedError('{} decoder not implemented'.format(self.decoder))
 
@@ -1322,6 +1393,17 @@ class ResidualRepeatWav2Letter(nn.Module):
                 cnn_states = self.layers(x).permute(0, 2, 1).contiguous()
                 return self.decoder(cnn_states,
                                     trg=trg)
+            elif self.decoder_type == 'double_supervision':
+                # transform cnn format (batch, channel, length)
+                # to rnn format (batch, length, channel)
+                cnn_states = self.layers(x)
+                ctc_states = self.ctc_decoder(
+                    cnn_states.permute(2, 0, 1).contiguous()
+                    ).permute(1, 2, 0).contiguous()
+                ctc_out = self.ctc_fc(ctc_states)
+                s2s_out = self.s2s_decoder(ctc_states,
+                                           trg=trg)
+                return ctc_out, s2s_out
             elif self.decoder_type == 'pointwise':
                 return self.layers(x)
             else:
@@ -2530,27 +2612,26 @@ class Decoder(nn.Module):
 
     def __init__(self,
                  emb_size, hidden_size, tgt_vocab, attention,
-                 num_layers=1, dropout=0.5,
-                 bridge=True, heavy_decoder=False,
-                 add_input_skip=False, skip_attention=None,
-                 sos_index=299
-                 ):
+                 num_encoder_layers=1,
+                 num_decoder_layers=2,
+                 dropout=0.1,
+                 sos_index=299):
         super(Decoder, self).__init__()
 
         self.dropout = dropout
         self.attention = attention
         self.tgt_vocab = tgt_vocab
         self.sos_index = sos_index
-        self.num_layers = num_layers
+        self.num_decoder_layers = num_decoder_layers
+        self.num_encoder_layers = num_encoder_layers
         self.hidden_size = hidden_size
-        self.add_input_skip = add_input_skip
 
         self.trg_embed = nn.Embedding(tgt_vocab, emb_size)
         self.generator = Generator(hidden_size, tgt_vocab)
 
         self.rnn = nn.GRU(emb_size + hidden_size,
                           hidden_size,
-                          num_layers,
+                          num_decoder_layers,
                           batch_first=True,
                           dropout=dropout)
 
@@ -2560,14 +2641,13 @@ class Decoder(nn.Module):
         # use CNN encoded states to initialize final encoder state
         self.bridge = nn.GRU(hidden_size,
                              hidden_size,
-                             num_layers,
+                             num_encoder_layers,
                              batch_first=True,
                              dropout=dropout)
 
         self.dropout_layer = nn.Dropout(p=dropout)
         self.pre_output_layer = nn.Linear(hidden_size + hidden_size + emb_size*(1+add_input_skip),
                                             hidden_size, bias=False)
-
 
     def forward_step(self, prev_embed, encoder_hidden, src_mask, proj_key, hidden):
         """Perform a single decoder step (1 word)"""
@@ -2590,7 +2670,6 @@ class Decoder(nn.Module):
 
         return output, hidden, pre_output
 
-
     def forward(self,
                 cnn_states,
                 trg=None):
@@ -2599,7 +2678,6 @@ class Decoder(nn.Module):
                                     trg)
         else:
             return self.inference(cnn_states)
-
 
     def train_batch(self,
                     cnn_states,
@@ -2640,7 +2718,6 @@ class Decoder(nn.Module):
         pre_output_vectors = torch.cat(pre_output_vectors, dim=1)
         output = self.generator(pre_output_vectors)
         return output
-
 
     def inference(self, cnn_states):
         device = cnn_states.device
@@ -2692,7 +2769,6 @@ class Decoder(nn.Module):
         sos_prob[:, 0, self.sos_index] = 1.0
         output = torch.cat([sos_prob, output], dim=1)
         return output
-
 
     def init_rnn_states(self, cnn_states):
         output, final = self.bridge(cnn_states)

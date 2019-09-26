@@ -208,7 +208,7 @@ class GreedyDecoder(Decoder):
                     else:
                         string += char
                     if char == self.end_token:
-                        cut_triggered = True                        
+                        cut_triggered = True
                     offsets.append(i)
                 prev_token = char
 
@@ -236,6 +236,10 @@ class GreedyDecoder(Decoder):
         # may be a bit shorter than CTC network output
         if use_attention:
             sizes = [max_probs.size(1)] * max_probs.size(0)
-        strings, offsets = self.convert_to_strings(max_probs.view(max_probs.size(0), max_probs.size(1)), sizes,
-                                                   remove_repetitions=True, return_offsets=True)
+            # do not remove ctc repetitions with attention
+            strings, offsets = self.convert_to_strings(max_probs.view(max_probs.size(0), max_probs.size(1)), sizes,
+                                                       remove_repetitions=False, return_offsets=True)
+        else:
+            strings, offsets = self.convert_to_strings(max_probs.view(max_probs.size(0), max_probs.size(1)), sizes,
+                                                       remove_repetitions=True, return_offsets=True)
         return strings, offsets
