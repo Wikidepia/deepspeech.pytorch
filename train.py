@@ -236,6 +236,16 @@ class MultipleOptimizer(object):
         for op in self.optimizers:
             op.step()
 
+    def state_dict(self):
+        out = [op.state_dict() for op in self.optimizers]
+        return out
+
+    def load_state_dict(self,
+                        states):
+        assert len(states) == len(self.optimizers)
+        for i in range(len(self.optimizers)):
+            self.optimizers[i].load_state_dict(states[i])
+
 
 def build_optimizer(args_,
                     parameters_=None,
@@ -510,11 +520,6 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                  input_percentages,
                  target_sizes,
                  mask_targets) = data
-            elif args.double_supervision:
-                (inputs,
-                 _targets, targets,
-                 filenames, input_percentages,
-                 _target_sizes, target_sizes) = data
             else:
                 inputs, targets, filenames, input_percentages, target_sizes = data
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
@@ -555,7 +560,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 probs = logits
             elif args.double_supervision:
                 ctc_logits, s2s_logits, output_sizes = model(inputs,
-                                                            lengths=input_sizes)
+                                                             lengths=input_sizes)
                 # s2s decoder is the final decoder
                 probs = s2s_logits
             else:
@@ -617,9 +622,15 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
                 num_words += wer_ref
                 num_chars += cer_ref
 
-            del inputs, targets, input_percentages, target_sizes
-            del logits, probs, output_sizes, input_sizes
-            del split_targets, loss
+            if args.double_supervision:
+                del inputs, targets, input_percentages, input_sizes
+                del probs, output_sizes, target_sizes, loss
+                del ctc_logits, s2s_logits
+                del split_targets
+            else:
+                del inputs, targets, input_percentages, input_sizes
+                del logits, probs, output_sizes, target_sizes, loss
+                del split_targets
 
             if args.cuda:
                 torch.cuda.synchronize()
@@ -690,11 +701,6 @@ def calculate_trainval_quality_metrics(checkpoint,
                  input_percentages,
                  target_sizes,
                  mask_targets) = data
-            elif args.double_supervision:
-                (inputs,
-                 _targets, targets,
-                 filenames, input_percentages,
-                 _target_sizes, target_sizes) = data
             else:
                 inputs, targets, filenames, input_percentages, target_sizes = data
 
@@ -771,6 +777,8 @@ def calculate_trainval_quality_metrics(checkpoint,
             inf = float("inf")
             if args.distributed:
                 loss_value = reduce_tensor(loss, args.world_size).item()
+            elif args.double_supervision:
+                pass                
             else:
                 loss_value = loss.item()
             if loss_value == inf or loss_value == -inf:
@@ -804,9 +812,15 @@ def calculate_trainval_quality_metrics(checkpoint,
                 num_words += wer_ref
                 num_chars += cer_ref
 
-            del inputs, targets, input_percentages, target_sizes
-            del logits, probs, output_sizes, input_sizes
-            del split_targets, loss
+            if args.double_supervision:
+                del inputs, targets, input_percentages, input_sizes
+                del probs, output_sizes, target_sizes, loss
+                del ctc_logits, s2s_logits
+                del split_targets
+            else:
+                del inputs, targets, input_percentages, input_sizes
+                del logits, probs, output_sizes, target_sizes, loss
+                del split_targets
 
             if args.cuda:
                 torch.cuda.synchronize()
@@ -1197,7 +1211,7 @@ class Trainer:
             del inputs, targets, input_percentages, input_sizes
             del probs, output_sizes, target_sizes, loss, ctc_loss, s2s_loss
             del s2s_targets, s2s_target_sizes
-            del ctc_logits, s2s_logits          
+            del ctc_logits, s2s_logits
         else:
             del inputs, targets, input_percentages, input_sizes
             del logits, probs, output_sizes, target_sizes, loss
@@ -1379,6 +1393,11 @@ if __name__ == '__main__':
         from data.data_loader_aug import AudioDataLoaderDouble as AudioDataLoader
     else:
         from data.data_loader_aug import AudioDataLoader
+
+    if args.double_supervision:
+        from data.data_loader_aug import AudioDataLoader as AudioDataLoaderVal
+    else:
+        AudioDataLoaderVal = AudioDataLoader
 
     args.distributed = args.world_size > 1
     args.model_path = os.path.join(args.save_folder, 'best.model')
@@ -1569,7 +1588,7 @@ if __name__ == '__main__':
                            phoneme_count=len(phoneme_map) if args.use_phonemes else 0)
         if args.use_lookahead:
             model = model.to(device)
-        
+
         if args.double_supervision:
             optimizer = build_optimizer(args,
                                         model=model)
@@ -1648,14 +1667,14 @@ if __name__ == '__main__':
         # XXX: A hack to test max memory load.
         train_dataset.ids.reverse()
 
-    test_loader = AudioDataLoader(test_dataset,
-                                  batch_size=args.val_batch_size,
-                                  num_workers=args.num_workers)
+    test_loader = AudioDataLoaderVal(test_dataset,
+                                     batch_size=args.val_batch_size,
+                                     num_workers=args.num_workers)
 
     if args.train_val_manifest != '':
-        trainval_loader = AudioDataLoader(trainval_dataset,
-                                          batch_size=args.val_batch_size,
-                                          num_workers=args.num_workers)
+        trainval_loader = AudioDataLoaderVal(trainval_dataset,
+                                             batch_size=args.val_batch_size,
+                                             num_workers=args.num_workers)
 
     if not args.use_lookahead:
         model = model.to(device)
