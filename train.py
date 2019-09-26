@@ -1059,6 +1059,7 @@ class Trainer:
                                      output_sizes.cpu(),
                                      target_sizes)
             ctc_loss = ctc_loss / inputs.size(0)  # average the loss by minibatch
+            ctc_loss = ctc_loss.to(device)
 
             s2s_loss = s2s_criterion(s2s_logits.contiguous().view(-1,
                                                                   s2s_logits.size(-1)),
@@ -1066,6 +1067,7 @@ class Trainer:
             # average the loss by number of tokens
             # multiply by 10 for weight
             s2s_loss = 10 * s2s_loss / sum(s2s_target_sizes)
+            s2s_loss = s2s_loss.to(device)
 
             loss = ctc_loss + s2s_loss
 
@@ -1145,16 +1147,15 @@ class Trainer:
                         clip_grad_norm_(model.parameters(),
                                         args.max_norm)
 
-            if torch.isnan(logits).any():
-                # work around bad data
-                print("WARNING: Skipping NaNs in backward step")
-            else:
-                # SGD step
-                optimizer.step()
-                if lr_clipping:
-                    set_lr(underlying_lr)
-                if args.enorm:
-                    enorm.step()
+            # if torch.isnan(logits).any():
+            #    # work around bad data
+            #     print("WARNING: Skipping NaNs in backward step")
+            # SGD step
+            optimizer.step()
+            if lr_clipping:
+                set_lr(underlying_lr)
+            if args.enorm:
+                enorm.step()
 
         # measure elapsed time
         batch_time.update(time.time() - self.end)
@@ -1192,8 +1193,14 @@ class Trainer:
                     epoch + 1, batch_id + 1, len(train_sampler),
                     batch_time=batch_time, data_time=data_time, loss=losses))
 
-        del inputs, targets, input_percentages, input_sizes
-        del logits, probs, output_sizes, target_sizes, loss
+        if args.double_supervision:
+            del inputs, targets, input_percentages, input_sizes
+            del probs, output_sizes, target_sizes, loss, ctc_loss, s2s_loss
+            del s2s_targets, s2s_target_sizes
+            del ctc_logits, s2s_logits          
+        else:
+            del inputs, targets, input_percentages, input_sizes
+            del logits, probs, output_sizes, target_sizes, loss
         return loss_value
 
 
