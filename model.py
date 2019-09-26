@@ -1339,7 +1339,7 @@ class ResidualRepeatWav2Letter(nn.Module):
             attention = BahdanauAttention(size, query_size=size)
             self.s2s_decoder = Decoder(256, size,
                                        self.num_classes, attention,
-                                       num_encoder_layers=1, # shorter encoder because of ctc decoder
+                                       num_encoder_layers=2, # shorter encoder because of ctc decoder
                                        num_decoder_layers=2, dropout=dropout,
                                        sos_index=self.num_classes-2)
             # s2s already contains a generator "fc" module inside
@@ -1394,15 +1394,23 @@ class ResidualRepeatWav2Letter(nn.Module):
                 return self.decoder(cnn_states,
                                     trg=trg)
             elif self.decoder_type == 'double_supervision':
-                # transform cnn format (batch, channel, length)
-                # to rnn format (batch, length, channel)
+                # DS2 legacy code assumes T*N*H input
+                # i.e.        length * batch    * channels
+                # instead of  batch  * channels * length like in CNNs
                 cnn_states = self.layers(x)
+                # print(trg.size())
+                # print('cnn_states {}' .format(cnn_states.size()))
                 ctc_states = self.ctc_decoder(
                     cnn_states.permute(2, 0, 1).contiguous()
-                    ).permute(1, 2, 0).contiguous()
-                ctc_out = self.ctc_fc(ctc_states)
-                s2s_out = self.s2s_decoder(ctc_states,
+                    )
+                # print('ctc_states {}' .format(ctc_states.size()))
+                ctc_out = self.ctc_fc(
+                    ctc_states.permute(1, 2, 0).contiguous()
+                    ).permute(0, 2, 1).contiguous()
+                # print('ctc_out {}' .format(ctc_out.size()))
+                s2s_out = self.s2s_decoder(ctc_states.permute(1, 0, 2).contiguous(),
                                            trg=trg)
+                # print('s2s_out {}' .format(s2s_out.size()))
                 return ctc_out, s2s_out
             elif self.decoder_type == 'pointwise':
                 return self.layers(x)
@@ -2612,7 +2620,7 @@ class Decoder(nn.Module):
 
     def __init__(self,
                  emb_size, hidden_size, tgt_vocab, attention,
-                 num_encoder_layers=1,
+                 num_encoder_layers=2,
                  num_decoder_layers=2,
                  dropout=0.1,
                  sos_index=299):
@@ -2646,8 +2654,8 @@ class Decoder(nn.Module):
                              dropout=dropout)
 
         self.dropout_layer = nn.Dropout(p=dropout)
-        self.pre_output_layer = nn.Linear(hidden_size + hidden_size + emb_size*(1+add_input_skip),
-                                            hidden_size, bias=False)
+        self.pre_output_layer = nn.Linear(hidden_size + hidden_size + emb_size,
+                                          hidden_size, bias=False)
 
     def forward_step(self, prev_embed, encoder_hidden, src_mask, proj_key, hidden):
         """Perform a single decoder step (1 word)"""

@@ -42,14 +42,18 @@ class Labels:
             'sp_space_token': sp_space_token,
             's2s_decoder': s2s_decoder,
         }
+        print(kwargs)
         if use_phonemes:
             raise NotImplementedError('Phonemes not backported')
         if (s2s_decoder and not double_supervision) or (not s2s_decoder and not double_supervision):
             # just an ordinary decoder
             self.labels = _Labels(**kwargs)
+            self.label_list = self.labels.label_list
         elif not s2s_decoder and double_supervision:
-            self.labels = [_Labels({**kwargs, 's2s_decoder': False}),
-                           _Labels({**kwargs, 's2s_decoder': True})]
+            ctc_kwargs = {**kwargs, 's2s_decoder': False}
+            s2s_kwargs = {**kwargs, 's2s_decoder': True}
+            self.labels = [_Labels(**ctc_kwargs), _Labels(**s2s_kwargs)]
+            self.label_list = self.labels[1].label_list
         elif s2s_decoder and double_supervision:
             raise NotImplementedError('This case should be impossible')
 
@@ -71,7 +75,6 @@ class _Labels:
                  sp_model_phoneme='data/phoneme_spm_train_v05_cleaned_asr_10s_phoneme.model',
                  sp_space_token='▁',
                  s2s_decoder=False):
-
         self.use_phonemes = use_phonemes
         # will not be used
         # if sp is trained with coverage of 1.0
@@ -128,9 +131,9 @@ class _Labels:
         assert len(self.labels_map) == len(self.label_list)
 
         self.labels_map_reverse = {v: k for k, v in self.labels_map.items()}
-        print('Test whole bpe class {}'.format(self.parse('пушистый рыжий котик')))        
+        print('Test whole bpe class {}'.format(self.parse('пушистый рыжий котик')))
 
-    def encode_phonemes(text):
+    def encode_phonemes(self, text):
         text = text.replace('\n','')
         out = []
         words = text.split(' ')
@@ -161,9 +164,8 @@ class _Labels:
         transcript = []
 
         if self.use_phonemes:
-
             # to fake alphabet
-            fake_encoded = encode_phonemes(text)
+            fake_encoded = self.encode_phonemes(text)
             sp_transcript = self.spm.encode_as_pieces(fake_encoded)
 
             out = []

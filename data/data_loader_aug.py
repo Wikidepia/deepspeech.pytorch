@@ -556,7 +556,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.use_bpe = audio_conf.get('use_bpe', False)
         if self.use_bpe:
             from data.bpe_labels import Labels as BPELabels
-            self.labels = BPELabels(sp_model=audio_conf.get('sp_model', ''),  # will raise error if model is invalid
+            self.labels = BPELabels(sp_model=audio_conf.get('sp_model', ''),  #  will raise error if model is invalid
                                     use_phonemes=False,
                                     s2s_decoder=use_attention,
                                     double_supervision=double_supervision)
@@ -848,7 +848,7 @@ def _collate_fn(batch):
     return inputs, targets, filenames, input_percentages, target_sizes
 
 
-def _collate_fn(batch):
+def _collate_fn_double(batch):
     def func(p):
         return p[0].size(1)
 
@@ -891,7 +891,7 @@ def _collate_fn(batch):
     return (inputs,
             ctc_targets, s2s_targets,
             filenames, input_percentages,
-            ctc_targets, s2s_targets)
+            ctc_target_sizes, s2s_target_sizes)
 
 
 def _collate_fn_denoise(batch):
@@ -976,7 +976,7 @@ class AudioDataLoaderDouble(DataLoader):
         """
         Creates a data loader for AudioDatasets.
         """
-        super(AudioDataLoader, self).__init__(*args, **kwargs)
+        super(AudioDataLoaderDouble, self).__init__(*args, **kwargs)
         self.collate_fn = _collate_fn_double
 
 

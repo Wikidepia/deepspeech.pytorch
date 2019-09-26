@@ -237,7 +237,9 @@ class MultipleOptimizer(object):
             op.step()
 
 
-def build_optimizer(args_, parameters_):
+def build_optimizer(args_,
+                    parameters_=None,
+                    model=None):
     # import aggmo
     # return aggmo.AggMo(model.parameters(), args_.lr, betas=[0, 0.6, 0.9])
     if args_.weight_decay > 0:
@@ -253,11 +255,11 @@ def build_optimizer(args_, parameters_):
         # _ctc_params = [param for name, param in parameters_.iteritems()
         #              if 'foo' in name]
 
-        ctc_optimizer = torch.optim.SGD(parameters_,
+        ctc_optimizer = torch.optim.SGD(model.parameters(),
                                         lr=args_.lr,
                                         momentum=args_.momentum,
                                         nesterov=True)
-        s2s_optimizer = torch.optim.Adam(parameters_,
+        s2s_optimizer = torch.optim.Adam(model.parameters(),
                                          lr=adam_lr)
         return MultipleOptimizer([ctc_optimizer, s2s_optimizer])
     elif args_.optimizer == 'sgd':
@@ -887,7 +889,7 @@ class Trainer:
             (inputs,
              targets, s2s_targets,
              filenames, input_percentages,
-             target_sizes, s2s_targets) = data
+             target_sizes, s2s_target_sizes) = data
         else:
             inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
@@ -959,7 +961,11 @@ class Trainer:
         else:
             logits, probs, output_sizes = model(inputs, input_sizes)
 
-        assert logits.is_cuda
+        if args.double_supervision:
+            assert ctc_logits.is_cuda
+            assert s2s_logits.is_cuda
+        else:
+            assert logits.is_cuda
         assert probs.is_cuda
         assert output_sizes.is_cuda
 
@@ -1175,7 +1181,7 @@ class Trainer:
                       args.gpu_rank or VISIBLE_DEVICES[0],
                       epoch + 1, batch_id + 1, len(train_sampler),
                       batch_time=batch_time, data_time=data_time, loss=losses,
-                      ctc_losses=ctc_losses, ctc_losses=s2s_losses))
+                      ctc_losses=ctc_losses, s2s_losses=s2s_losses))
             else:
                 print('GPU-{0} Epoch {1} [{2}/{3}]\t'
                     'Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t'
@@ -1555,8 +1561,14 @@ if __name__ == '__main__':
                            phoneme_count=len(phoneme_map) if args.use_phonemes else 0)
         if args.use_lookahead:
             model = model.to(device)
-        parameters = model.parameters()
-        optimizer = build_optimizer(args, parameters)
+        
+        if args.double_supervision:
+            optimizer = build_optimizer(args,
+                                        model=model)
+        else:
+            parameters = model.parameters()
+            optimizer = build_optimizer(args,
+                                        parameters_=parameters)
 
     # enorm = ENorm(model.named_parameters(), optimizer, c=1)
     if args.use_attention:
