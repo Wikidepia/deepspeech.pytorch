@@ -996,13 +996,14 @@ class Trainer:
         if args.use_phonemes:
             phoneme_logits = phoneme_logits.transpose(0, 1)  # TxNxH
 
-        if not args.use_attention:
+        if not args.use_attention and not args.double_supervision:
             logits = logits.transpose(0, 1)  # TxNxH
 
-        if torch.isnan(logits).any():  # and args.nan == 'zero':
-            # work around bad data
-            print("WARNING: Working around NaNs in data")
-            logits[torch.isnan(logits)] = 0
+        if not args.double_supervision:
+            if torch.isnan(logits).any():  # and args.nan == 'zero':
+                # work around bad data
+                print("WARNING: Working around NaNs in data")
+                logits[torch.isnan(logits)] = 0
 
         if args.use_phonemes:
             # output_sizes should be the same
@@ -1064,9 +1065,9 @@ class Trainer:
                                      trg_y.contiguous().view(-1))
             # average the loss by number of tokens
             # multiply by 10 for weight
-            s2s_loss = 10 * loss / sum(s2s_target_sizes)
+            s2s_loss = 10 * s2s_loss / sum(s2s_target_sizes)
 
-            loss = ctc_loss + mask_loss
+            loss = ctc_loss + s2s_loss
 
             inf = float("inf")
             if args.distributed:
