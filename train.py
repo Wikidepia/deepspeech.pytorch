@@ -257,15 +257,13 @@ def build_optimizer(args_,
 
     if args.double_supervision:
         import itertools
-        
-        print('Using double supervision, SGD with clipping for CTC, ADAM for s2s')
+
         adam_lr = args_.lr / 10
         sgd_lr = args_.lr
+
+        print('Using double supervision, SGD with clipping for CTC, ADAM for s2s')
         print('SGD LR {} / ADAM LR {}'.format(sgd_lr, adam_lr))
 
-        # unclear whether to separate params
-        # _ctc_params = [param for name, param in parameters_.iteritems()
-        #              if 'foo' in name]
         params_ctc = [model.rnns.layers.parameters(),
                       model.rnns.ctc_decoder.parameters(),
                       model.rnns.ctc_fc.parameters()]
@@ -277,6 +275,7 @@ def build_optimizer(args_,
                                         nesterov=True)
         s2s_optimizer = torch.optim.Adam(itertools.chain(*params_adam),
                                          lr=adam_lr)
+
         return MultipleOptimizer([ctc_optimizer, s2s_optimizer])
     elif args_.optimizer == 'sgd':
         print('Using SGD')
@@ -483,13 +482,13 @@ def set_lr(lr):
     print('Learning rate annealed to: {lr:.6g}'.format(lr=lr))
     if args.double_supervision:
         # ADAM's LR typically is set 10x lower than SGD
-        sgd_optim_state = optimizer.optimizers[0].optimizer.state_dict()
+        sgd_optim_state = optimizer.optimizers[0].state_dict()
         sgd_optim_state['param_groups'][0]['lr'] = lr
-        optimizer.optimizers[0].optimizer.load_state_dict(sgd_optim_state)
+        optimizer.optimizers[0].load_state_dict(sgd_optim_state)
 
-        adam_optim_state = optimizer.optimizers[1].optimizer.state_dict()
+        adam_optim_state = optimizer.optimizers[1].state_dict()
         adam_optim_state['param_groups'][0]['lr'] = lr / 10
-        optimizer.optimizers[1].optimizer.load_state_dict(adam_optim_state)
+        optimizer.optimizers[1].load_state_dict(adam_optim_state)
     elif args.use_lookahead:
         optim_state = optimizer.optimizer.state_dict()
         optim_state['param_groups'][0]['lr'] = lr
