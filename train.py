@@ -256,6 +256,8 @@ def build_optimizer(args_,
         print('Using weight decay {} for SGD'.format(args_.weight_decay))
 
     if args.double_supervision:
+        import itertools
+        
         print('Using double supervision, SGD with clipping for CTC, ADAM for s2s')
         adam_lr = args_.lr / 10
         sgd_lr = args_.lr
@@ -264,12 +266,16 @@ def build_optimizer(args_,
         # unclear whether to separate params
         # _ctc_params = [param for name, param in parameters_.iteritems()
         #              if 'foo' in name]
+        params_ctc = [model.rnns.layers.parameters(),
+                      model.rnns.ctc_decoder.parameters(),
+                      model.rnns.ctc_fc.parameters()]
+        params_adam = [model.rnns.s2s_decoder.parameters()]
 
-        ctc_optimizer = torch.optim.SGD(model.parameters(),
+        ctc_optimizer = torch.optim.SGD(itertools.chain(*params_ctc),
                                         lr=args_.lr,
                                         momentum=args_.momentum,
                                         nesterov=True)
-        s2s_optimizer = torch.optim.Adam(model.parameters(),
+        s2s_optimizer = torch.optim.Adam(itertools.chain(*params_adam),
                                          lr=adam_lr)
         return MultipleOptimizer([ctc_optimizer, s2s_optimizer])
     elif args_.optimizer == 'sgd':
@@ -778,7 +784,7 @@ def calculate_trainval_quality_metrics(checkpoint,
             if args.distributed:
                 loss_value = reduce_tensor(loss, args.world_size).item()
             elif args.double_supervision:
-                pass                
+                pass
             else:
                 loss_value = loss.item()
             if loss_value == inf or loss_value == -inf:
@@ -972,6 +978,8 @@ class Trainer:
                                                          trg=trg_teacher_forcing)
             # s2s decoder is the final decoder
             probs = s2s_logits
+            # (batch x sequence x channels) => (seqLength x batch x outputDim)
+            ctc_logits = ctc_logits.transpose(0, 1)
         else:
             logits, probs, output_sizes = model(inputs, input_sizes)
 
@@ -1080,7 +1088,7 @@ class Trainer:
                                      trg_y.contiguous().view(-1))
             # average the loss by number of tokens
             # multiply by 10 for weight
-            s2s_loss = 1 * s2s_loss / sum(s2s_target_sizes)
+            s2s_loss = 10 * s2s_loss / sum(s2s_target_sizes)
             s2s_loss = s2s_loss.to(device)
 
             loss = ctc_loss + s2s_loss
