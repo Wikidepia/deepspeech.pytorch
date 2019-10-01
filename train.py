@@ -63,8 +63,11 @@ parser.add_argument('--pytorch-mel', action='store_true', help='Use pytorch base
 parser.add_argument('--pytorch-stft', action='store_true', help='Use pytorch based STFT')
 parser.add_argument('--denoise', action='store_true', help='Train a denoising head')
 
+
 parser.add_argument('--use-attention', action='store_true', help='Use attention based decoder instead of CTC')
 parser.add_argument('--double-supervision', action='store_true', help='Use both CTC and attention in sequence')
+parser.add_argument('--naive-split', action='store_true', help='Use a naive DS2 inspired syllable split')
+
 
 parser.add_argument('--window-size', default=.02, type=float, help='Window size for spectrogram in seconds')
 parser.add_argument('--window-stride', default=.01, type=float, help='Window stride for spectrogram in seconds')
@@ -258,7 +261,7 @@ def build_optimizer(args_,
     if args.double_supervision:
         import itertools
 
-        adam_lr = args_.lr / 10
+        adam_lr = 1e-4 # / 10
         sgd_lr = args_.lr
 
         print('Using double supervision, SGD with clipping for CTC, ADAM for s2s')
@@ -487,7 +490,8 @@ def set_lr(lr):
         optimizer.optimizers[0].load_state_dict(sgd_optim_state)
 
         adam_optim_state = optimizer.optimizers[1].state_dict()
-        adam_optim_state['param_groups'][0]['lr'] = lr / 10
+        # always fixed for adam
+        adam_optim_state['param_groups'][0]['lr'] = 1e-4
         optimizer.optimizers[1].load_state_dict(adam_optim_state)
     elif args.use_lookahead:
         optim_state = optimizer.optimizer.state_dict()
@@ -1547,7 +1551,8 @@ if __name__ == '__main__':
             labels = BPELabels(sp_model=args.sp_model,
                                use_phonemes=False,
                                s2s_decoder=args.use_attention or args.double_supervision,
-                               double_supervision=False)
+                               double_supervision=False,
+                               naive_split=args.naive_split)
             # list instead of string
             labels = labels.label_list
             # in case of double supervision just use the longer
@@ -1637,7 +1642,8 @@ if __name__ == '__main__':
                                        labels=labels, normalize=args.norm, augment=args.augment,
                                        curriculum_filepath=args.curriculum,
                                        use_attention=args.use_attention,
-                                       double_supervision=args.double_supervision)
+                                       double_supervision=args.double_supervision,
+                                       naive_split=args.naive_split)
     test_audio_conf = {**audio_conf,
                        'noise_prob': 0,
                        'aug_prob_8khz':0,
@@ -1655,7 +1661,8 @@ if __name__ == '__main__':
                                       manifest_filepath=args.val_manifest,
                                       labels=labels, normalize=args.norm, augment=False,
                                       use_attention=args.use_attention or args.double_supervision,
-                                      double_supervision=False)
+                                      double_supervision=False,
+                                      naive_split=args.naive_split)
 
     # if file is specified
     # separate train validation wo domain shift
@@ -1668,7 +1675,8 @@ if __name__ == '__main__':
                                               manifest_filepath=args.train_val_manifest,
                                               labels=labels, normalize=args.norm, augment=False,
                                               use_attention=args.use_attention or args.double_supervision,
-                                              double_supervision=False)
+                                              double_supervision=False,
+                                              naive_split=args.naive_split)
 
     if args.reverse_sort:
         # XXX: A hack to test max memory load.

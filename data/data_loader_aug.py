@@ -524,7 +524,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
     def __init__(self, audio_conf, manifest_filepath, cache_path, labels, normalize=False, augment=False,
                  max_items=None, curriculum_filepath=None,
                 use_attention=False,
-                double_supervision=False):
+                double_supervision=False,
+                naive_split=False):
         """
         Dataset that loads tensors via a csv containing file paths to audio files and transcripts separated by
         a comma. Each new line is a different sample. Example below:
@@ -559,7 +560,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             self.labels = BPELabels(sp_model=audio_conf.get('sp_model', ''),  #  will raise error if model is invalid
                                     use_phonemes=False,
                                     s2s_decoder=use_attention,
-                                    double_supervision=double_supervision)
+                                    double_supervision=double_supervision,
+                                    naive_split=naive_split)
         else:
             self.labels = Labels(labels)
 

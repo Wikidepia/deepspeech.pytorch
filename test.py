@@ -32,6 +32,7 @@ parser.add_argument('--data-parallel', dest='data_parallel', action='store_true'
 parser.add_argument('--report-file', metavar='DIR', default='data/test_report.csv', help="Filename to save results")
 parser.add_argument('--bpe-as-lists', action="store_true", help="save BPE results as eval lists")
 parser.add_argument('--norm_text', action="store_true", help="replace 2's")
+parser.add_argument('--predict_2_heads', action="store_true", help="save both ctc decoder head and attention head outputs")
 
 no_decoder_args = parser.add_argument_group("No Decoder Options", "Configuration options for when no decoder is "
                                                                   "specified")
@@ -73,7 +74,10 @@ if __name__ == '__main__':
     if args.report_file:
         os.makedirs(os.path.dirname(args.report_file), exist_ok=True)
         report_file = csv.writer(open(args.report_file, 'wt'))
-        report_file.writerow(['wav', 'text', 'transcript', 'offsets', 'CER', 'WER'])
+        if args.predict_2_heads:
+            report_file.writerow(['wav', 'text', 'transcript', 'transcript_ctc', 'offsets', 'CER', 'WER'])
+        else:
+            report_file.writerow(['wav', 'text', 'transcript', 'offsets', 'CER', 'WER'])
 
     if args.decoder == "beam":
         from .decoder import BeamCTCDecoder
@@ -81,18 +85,36 @@ if __name__ == '__main__':
         decoder = BeamCTCDecoder(labels, lm_path=args.lm_path, alpha=args.alpha, beta=args.beta,
                                  cutoff_top_n=args.cutoff_top_n, cutoff_prob=args.cutoff_prob,
                                  beam_width=args.beam_width, num_processes=args.lm_workers)
+        if args.predict_2_heads:
+            raise NotImplementedError()
     elif args.decoder == "greedy":
-        decoder = GreedyDecoder(labels, blank_index=labels.index('_'),
-                                bpe_as_lists=args.bpe_as_lists, norm_text=args.norm_text)
+        decoder = GreedyDecoder(labels,
+                                blank_index=labels.index('_'),
+                                bpe_as_lists=args.bpe_as_lists,
+                                norm_text=args.norm_text,
+                                cut_after_eos_token=args.predict_2_heads)
+
+        if args.predict_2_heads:
+            ctc_decoder = GreedyDecoder(labels,
+                                        blank_index=labels.index('_'),
+                                        bpe_as_lists=args.bpe_as_lists,
+                                        norm_text=args.norm_text,
+                                        cut_after_eos_token=False)
     else:
         decoder = None
-    target_decoder = GreedyDecoder(labels, blank_index=labels.index('_'))
+
+    target_decoder = GreedyDecoder(labels,
+                                   blank_index=labels.index('_'),
+                                   cut_after_eos_token=args.predict_2_heads)
+
     test_dataset = SpectrogramDataset(audio_conf=audio_conf,
                                       manifest_filepath=args.test_manifest,
                                       cache_path=args.cache_dir,
                                       labels=labels,
                                       normalize=args.norm,
-                                      augment=False)
+                                      augment=False,
+                                      use_attention=args.predict_2_heads,
+                                      double_supervision=False)
 
     # import random;random.shuffle(test_dataset.ids)
 
@@ -119,22 +141,39 @@ if __name__ == '__main__':
 
         # print(inputs.shape, inputs.is_cuda, input_sizes.shape, input_sizes.is_cuda)
         model_outputs = model(inputs, input_sizes)
+
+        if args.predict_2_heads:
+            ctc_logits, s2s_logits, output_sizes = model_outputs
         # ignore phoneme outputs
-        if len(model_outputs) == 5:
+        elif len(model_outputs) == 5:
             out0, out, output_sizes, _, _ = model_outputs
         else:
             out0, out, output_sizes = model_outputs
         del inputs, targets, input_percentages, target_sizes, model_outputs
 
         if decoder is None: continue
-        decoded_output, _ = decoder.decode(out.data, output_sizes.data)
+
+        if args.predict_2_heads:
+            decoded_output, _ = decoder.decode(s2s_logits.data, output_sizes.data)
+            ctc_decoded_output, _ = ctc_decoder.decode(ctc_logits.data, output_sizes.data)
+        else:
+            decoded_output, _ = decoder.decode(out.data, output_sizes.data)
+
+
         target_strings = target_decoder.convert_to_strings(split_targets)
 
-        out_raw_cpu = out0.cpu().numpy()
-        out_softmax_cpu = out.cpu().numpy()
+        if args.predict_2_heads:
+            out_raw_cpu = ''
+            out_softmax_cpu = ''
+        else:
+            out_raw_cpu = out0.cpu().numpy()
+            out_softmax_cpu = out.cpu().numpy()
+
         sizes_cpu = output_sizes.cpu().numpy()
         for x in tqdm(range(len(target_strings))):
             transcript, reference = decoded_output[x][0], target_strings[x][0]
+            if args.predict_2_heads:
+                ctc_transcript = ctc_decoded_output[x][0]
 
             wer, cer, wer_ref, cer_ref = get_cer_wer(decoder, transcript, reference)
 
@@ -152,6 +191,8 @@ if __name__ == '__main__':
                         'wer': wer / wer_ref,
                         'cer': cer / cer_ref,
                     }
+                    if args.predict_2_heads:
+                        results['ctc_transcript'] = ctc_transcript
                     pickle.dump(results, f, protocol=4)
                     del results
                 # continue
@@ -182,13 +223,23 @@ if __name__ == '__main__':
             if report_file:
                 # report_file.write_row(['wav', 'text', 'transcript', 'offsets', 'CER', 'WER'])
 
-                report_file.writerow([
-                    filenames[x],
-                    reference,
-                    transcript,
-                    cer / cer_ref,
-                    wer / wer_ref
-                ])
+                if args.predict_2_heads:
+                    report_file.writerow([
+                        filenames[x],
+                        reference,
+                        transcript,
+                        ctc_transcript,
+                        cer / cer_ref,
+                        wer / wer_ref
+                    ])                    
+                else:
+                    report_file.writerow([
+                        filenames[x],
+                        reference,
+                        transcript,
+                        cer / cer_ref,
+                        wer / wer_ref
+                    ])
 
             total_wer += wer
             total_cer += cer
@@ -198,8 +249,10 @@ if __name__ == '__main__':
             avg_total_wer += wer / wer_ref
             avg_total_cer += cer / cer_ref
 
-
-        del out, out0, output_sizes, out_raw_cpu, out_softmax_cpu
+        if args.predict_2_heads:
+            del ctc_logits, s2s_logits, output_sizes, out_raw_cpu, out_softmax_cpu
+        else:
+            del out, out0, output_sizes, out_raw_cpu, out_softmax_cpu
         if (i + 1) % 5 == 0 or args.batch_size == 1:
             gc.collect()
             torch.cuda.empty_cache()

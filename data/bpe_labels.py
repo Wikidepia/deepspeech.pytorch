@@ -1,9 +1,11 @@
 import re
 import json
 import string
+import pickle
 import pandas as pd
 from loguru import logger
 import sentencepiece as sp
+from functools import reduce
 from string import punctuation, printable
 
 russian_alphabet = 'АаБбВвГгДдЕеЁёЖжЗзИиЙйКкЛлМмНнОоПпРрСсТтУуФфХхЦцЧчШшЩщЪъЫыЬьЭэЮюЯя'
@@ -23,6 +25,18 @@ fake_2_phoneme = {v: k for k, v in phoneme_2_fake.items()}
 logger.add("bpe_labels.log", enqueue=True)
 
 
+letter_type_dict = {
+    # some random shit
+    'ъ': 0, 'ь': 0,'-': 0,
+    # vowels
+    'а': 2, 'е': 2, 'ё': 2, 'и': 2, 'о': 2, 'у': 2, 'э': 2, 'ю': 2, 'я': 2, 'ы': 2,
+    # consonants
+    'м': 1, 'н': 1, 'л': 1, 'р': 1,
+    'б': 1, 'в': 1, 'г': 1, 'д': 1, 'ж': 1, 'з': 1, 'й': 1, 'к': 1, 'п': 1,
+    'с': 1, 'т': 1, 'ф': 1, 'х': 1, 'ц': 1, 'ч': 1, 'ш': 1, 'щ': 1,
+}
+
+
 def remove_extra_spaces(text):
     return re.sub(' +', ' ', text)
 
@@ -32,6 +46,8 @@ class Labels:
                  use_phonemes=False,
                  sp_model='data/spm_train_v05_cleaned_asr_10s_phoneme.model',
                  sp_model_phoneme='data/phoneme_spm_train_v05_cleaned_asr_10s_phoneme.model',
+                 naive_split_list='data/naive_syllables.pickle',
+                 naive_split=False,
                  sp_space_token='▁',
                  s2s_decoder=False,
                  double_supervision=False):
@@ -41,6 +57,8 @@ class Labels:
             'sp_model_phoneme': sp_model_phoneme,
             'sp_space_token': sp_space_token,
             's2s_decoder': s2s_decoder,
+            'naive_split_list': naive_split_list,
+            'naive_split': naive_split
         }
         print(kwargs)
         if use_phonemes:
@@ -71,8 +89,10 @@ class Labels:
 class _Labels:
     def __init__(self,
                  use_phonemes=False,
+                 naive_split=False,
                  sp_model='data/spm_train_v05_cleaned_asr_10s_phoneme.model',
                  sp_model_phoneme='data/phoneme_spm_train_v05_cleaned_asr_10s_phoneme.model',
+                 naive_split_list='data/naive_syllables.pickle',
                  sp_space_token='▁',
                  s2s_decoder=False):
         self.use_phonemes = use_phonemes
@@ -84,21 +104,34 @@ class _Labels:
         # and replace it with ordinary space later
         self.sp_space_token = sp_space_token
         self.s2s_decoder = s2s_decoder
+        self.naive_split = naive_split
 
-        self.spm = sp.SentencePieceProcessor()
-        if self.use_phonemes:
-            self.spm.Load(sp_model_phoneme)
+        assert self.naive_split + self.s2s_decoder < 2
+
+        if self.naive_split:
+            pieces = upkl(naive_split_list)
+
+            sp_transcript = [naive_syllable_split(word) for word in 'пушистый рыжий котик'.split(' ')]
+            sp_transcript = reduce(lambda a, b: a+[' ']+b,
+                                   sp_transcript)
+            print('Naive syllables loaded, {} tokens'.format(len(pieces)))
+            print('Test naive syllable encoding {}'.format(sp_transcript))
         else:
-            self.spm.Load(sp_model)
-        sp_tokens = self.spm.get_piece_size()
-        print('Sentencepiece model loaded, {} tokens'.format(sp_tokens))
-        print('Test encoding of the sp model {}'.format(self.spm.encode_as_pieces('пушистый рыжий котик')))
+            self.spm = sp.SentencePieceProcessor()
+            if self.use_phonemes:
+                self.spm.Load(sp_model_phoneme)
+            else:
+                self.spm.Load(sp_model)
+            sp_tokens = self.spm.get_piece_size()
+            print('Sentencepiece model loaded, {} tokens'.format(sp_tokens))
+            print('Test encoding of the sp model {}'.format(self.spm.encode_as_pieces('пушистый рыжий котик')))
 
-        pieces = pd.DataFrame([{'piece_id': i,
-                                'piece_str': self.spm .IdToPiece(id=i),
-                                'piece_score': self.spm .GetScore(id=i)}
-                               for i in range(0, sp_tokens)])
-        pieces = pieces[~pieces.piece_str.isin(self.remove_sp_tokens+[self.sp_space_token])]
+            pieces = pd.DataFrame([{'piece_id': i,
+                                    'piece_str': self.spm.IdToPiece(id=i),
+                                    'piece_score': self.spm.GetScore(id=i)}
+                                for i in range(0, sp_tokens)])
+            pieces = pieces[~pieces.piece_str.isin(self.remove_sp_tokens+[self.sp_space_token])]
+            pieces = list(pieces.piece_str.values)
 
         self.label_list = []
 
@@ -106,7 +139,8 @@ class _Labels:
         self.labels_map = {"_": 0}
         self.label_list.append("_")
 
-        for key in list(pieces.piece_str.values):
+        assert type(pieces) == list
+        for key in list(pieces):
             self.labels_map[key] = len(self.labels_map)
             self.label_list.append(key)
 
@@ -161,6 +195,11 @@ class _Labels:
         if not self.use_phonemes:
             text = text.lower()
 
+        if self.naive_split:
+            # a bit more cleaning
+            # do not forget ё this time
+            text = text.replace('\n','').replace('*','').replace('ё', 'е')
+
         transcript = []
 
         if self.use_phonemes:
@@ -181,6 +220,10 @@ class _Labels:
             except Exception as e:
                 print('Error {} with {}'.format(str(e),
                                                 text))
+        elif self.naive_split:
+            sp_transcript = [naive_syllable_split(word) for word in text.split(' ')]
+            sp_transcript = reduce(lambda a,b:a+[' ']+b,
+                                   sp_transcript)
         else:
             sp_transcript = self.spm.encode_as_pieces(text)
 
@@ -216,3 +259,71 @@ class _Labels:
             raise NotImplementedError('This method is not applicable for phoneme BPE')
         else:
             return ''.join([self.labels_map_reverse[i] for i in codes])
+
+
+def naive_syllable_split(text,
+                         debug=False):
+    text = text.lower()
+
+    text_len = len(text)
+    son_list = [letter_type_dict[char] for char in text]
+
+    splits = []
+
+    is_syl = False
+
+    if debug: print(son_list)
+
+    for i in range(text_len - 1):
+        if son_list[i] == 0:
+            splits.append(i)
+            is_syl = False
+        elif son_list[i] in [1,2] and son_list[i+1] == 0:
+            splits.append(i)
+            is_syl = False
+        elif not is_syl and son_list[i] != son_list[i+1]:
+            is_syl = True
+        elif is_syl and son_list[i] != son_list[i-1]:
+            splits.append(i)
+            is_syl = False
+        elif not is_syl and son_list[i] == son_list[i+1]:
+            splits.append(i)
+            is_syl = False
+
+
+        if debug: print(i, is_syl, son_list[i] == son_list[i-1])
+
+    splits = lindexsplit(text, *splits)
+    return [''.join(_).replace('-','') for _ in splits]
+
+
+def lindexsplit(some_list, *args):
+    # Checks to see if any extra arguments were passed. If so,
+    # prepend the 0th index and append the final index of the
+    # passed list. This saves from having to check for the beginning
+    # and end of args in the for-loop. Also, increment each value in
+    # args to get the desired behavior.
+    if args:
+        args = (0,) + tuple(data+1 for data in args) + (len(some_list)+1,)
+
+    # For a little more brevity, here is the list comprehension of the following
+    # statements:
+    #    return [some_list[start:end] for start, end in zip(args, args[1:])]
+    my_list = []
+    for start, end in zip(args, args[1:]):
+        my_list.append(some_list[start:end])
+
+    if len(my_list) == 0:
+        return [some_list]
+    return my_list
+
+
+def pckl(obj,path):
+    with open(path, 'wb') as handle:
+        pickle.dump(obj, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def upkl(path):
+    with open(path, 'rb') as handle:
+        _ = pickle.load(handle)
+    return _
