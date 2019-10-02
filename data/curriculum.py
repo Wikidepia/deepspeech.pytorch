@@ -7,9 +7,6 @@ class Curriculum:
     CL_PROB = 0.2
     CL_POINT = 0.1
     ONLY_ONE_USE_BONUS = 0.1
-    WO_CR_WARMUP_TIMES = 30.0
-
-    print('Use CR after epochs {}'.format(WO_CR_WARMUP_TIMES))
    
     @classmethod
     def sample(cls, items, getter, epoch, min=1):
@@ -25,7 +22,7 @@ class Curriculum:
 
     @classmethod
     def get_prob(cls, text, cer, times_used):
-        if times_used < cls.WO_CR_WARMUP_TIMES:
+        if times_used == 0:
             # try to use all items for training at least once
             return 1.0
         else:

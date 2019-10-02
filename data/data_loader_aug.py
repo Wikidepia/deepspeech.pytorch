@@ -739,6 +739,18 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                              sample=False,
                              sample_size=0.5):
         if sample:
+            full_epoch = sample_size * epoch
+
+            if full_epoch < 10.0:
+                Curriculum.CL_POINT = 0.2
+            elif full_epoch < 20.0:
+                Curriculum.CL_POINT = 0.1
+            else:
+                Curriculum.CL_POINT = 0.05
+
+            print('Set CL Point to be {}, full epochs elapsed {}'.format(Curriculum.CL_POINT,
+                                                                         full_epoch))
+
             print('Getting dataset sample, size {}'.format(int(len(self.all_ids) * sample_size)))
             self.ids = list(
                 Curriculum.sample(self.all_ids,

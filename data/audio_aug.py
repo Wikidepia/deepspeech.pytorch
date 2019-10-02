@@ -276,7 +276,7 @@ class AddNoise:
                 alpha = self.limit * random.uniform(0, 1)
                 pos = random.randint(0, _noise.shape[0] - wav.shape[0])
                 # no normalization to estimate noise spectrum
-                wav = (wav + alpha * _noise[pos:pos+wav.shape[0]]) /(1+alpha)
+                wav = (wav + alpha * _noise[pos:pos+wav.shape[0]]) / (1 + alpha)
 
         return {'wav': wav, 'sr': sr}
 
