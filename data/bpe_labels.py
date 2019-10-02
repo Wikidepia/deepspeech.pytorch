@@ -199,6 +199,8 @@ class _Labels:
             # a bit more cleaning
             # do not forget ё this time
             text = text.replace('\n','').replace('*','').replace('ё', 'е')
+        else:
+            text = text.replace('2',' ').replace('*',' ').replace('ё', 'е').strip()
 
         transcript = []
 
