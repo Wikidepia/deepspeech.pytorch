@@ -742,11 +742,11 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             full_epoch = sample_size * epoch
 
             if full_epoch < 10.0:
-                Curriculum.CL_POINT = 0.2
+                Curriculum.CL_POINT = 0.10
             elif full_epoch < 20.0:
-                Curriculum.CL_POINT = 0.1
+                Curriculum.CL_POINT = 0.06
             else:
-                Curriculum.CL_POINT = 0.05
+                Curriculum.CL_POINT = 0.04
 
             print('Set CL Point to be {}, full epochs elapsed {}'.format(Curriculum.CL_POINT,
                                                                          full_epoch))
