@@ -472,6 +472,81 @@ class DeepSpeech(nn.Module):
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
             )
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8_groups8_transformer':  # add scale 8
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable': True,
+                    'add_downsample': 4,
+                    'dilated_blocks': [],  # no dilation
+                    'groups': 8,  # optimal group count, 512 // 12 = 64
+                    'decoder_type': 'transformer',
+                    'decoder_layers': 2
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nosc_nobn':  # add scale 8
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': False,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': False,
+                    'separable': True,
+                    'add_downsample': 4,
+                    'dilated_blocks': [],  # no dilation
+                    'groups': 8,  # optimal group count, 512 // 12 = 64
+                    'decoder_type': 'plain_gru',
+                    'nonlinearity': nn.SELU(inplace=True)
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nobn':  # add scale 8
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': False,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable': True,
+                    'add_downsample': 4,
+                    'dilated_blocks': [],  # no dilation
+                    'groups': 8,  # optimal group count, 512 // 12 = 64
+                    'decoder_type': 'plain_gru',
+                    'nonlinearity': nn.SELU(inplace=True)
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            )
         elif self._rnn_type == 'cnn_residual_repeat_sep_down8_groups8_attention':
             size = rnn_hidden_size
             self.rnns = ResidualRepeatWav2Letter(
@@ -737,7 +812,10 @@ class DeepSpeech(nn.Module):
                               'cnn_residual_repeat', 'tds','cnn_residual_repeat_sep',
                               'cnn_residual_repeat_sep_bpe', 'cnn_residual_repeat_sep_down8',
                               'cnn_inv_bottleneck_repeat_sep_down8', 'cnn_residual_repeat_sep_down8_groups8',
-                              'cnn_residual_repeat_sep_down8_groups8_plain_gru']:
+                              'cnn_residual_repeat_sep_down8_groups8_plain_gru',
+                              'cnn_residual_repeat_sep_down8_groups8_transformer',
+                              'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nosc_nobn',
+                              'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nobn']:
             x = x.squeeze(1)
             x = self.rnns(x)
             if hasattr(self, '_phoneme_count'):
@@ -1138,6 +1216,8 @@ class ResidualRepeatWav2Letter(nn.Module):
         self.groups = config.groups if 'groups' in config else 1
         self.decoder_type = config.decoder_type if 'decoder_type' in config else 'pointwise'
         self.num_classes = config.num_classes if 'num_classes' in config else 0
+        self.nonlinearity = config.nonlinearity if 'nonlinearity' in config else nn.ReLU(inplace=True)
+        decoder_layers = config.decoder_layers if 'decoder_layers' in config else 2
 
         downsampled_blocks = []
         downsampled_subblocks = []
@@ -1170,8 +1250,9 @@ class ResidualRepeatWav2Letter(nn.Module):
         kwargs = {
             '_in': 161, 'out': cnn_width, 'kernel_size': kernel_size,
             'padding': padding, 'stride': 2, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
-            'nonlinearity': nn.ReLU(inplace=True),
-            'se_ratio': 0, 'skip': False, 'repeat': 1
+            'nonlinearity': self.nonlinearity,
+            'se_ratio': 0, 'skip': False, 'repeat': 1,
+            'bnorm': bnorm
         }
         if self.groups > 1: kwargs['groups'] = self.groups
         modules = [Block(**kwargs)]
@@ -1195,8 +1276,9 @@ class ResidualRepeatWav2Letter(nn.Module):
             kwargs = {
                 '_in': cnn_width, 'out': cnn_width//4, 'kernel_size': kernel_size,
                 'padding': padding, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
-                'nonlinearity': nn.ReLU(inplace=True),
-                'se_ratio': 0, 'skip': False, 'repeat': 1
+                'nonlinearity': self.nonlinearity,
+                'se_ratio': 0, 'skip': False, 'repeat': 1,
+                'bnorm': bnorm
             }
             if self.groups > 1: kwargs['groups'] = self.groups
             modules.extend([Block(**kwargs)]) # no skips and attention
@@ -1213,9 +1295,10 @@ class ResidualRepeatWav2Letter(nn.Module):
                         '_in': cnn_width, 'out': cnn_width, 'kernel_size': kernel_size,
                         'padding': padding, 'dilation': dilation,
                         'stride': stride, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
-                        'nonlinearity': nn.ReLU(inplace=True),
+                        'nonlinearity': self.nonlinearity,
                         'se_ratio': 0, 'skip': False, 'repeat': 1,
-                        'inverted_bottleneck': inverted_bottleneck
+                        'inverted_bottleneck': inverted_bottleneck,
+                        'bnorm': bnorm
                     }
                     if self.groups > 1: kwargs['groups'] = self.groups
                     modules.extend(
@@ -1225,9 +1308,10 @@ class ResidualRepeatWav2Letter(nn.Module):
                     '_in': cnn_width, 'out': cnn_width, 'kernel_size': kernel_size,
                     'padding': padding, 'dilation': dilation,
                     'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
-                    'nonlinearity': nn.ReLU(inplace=True),
+                    'nonlinearity': self.nonlinearity,
                     'se_ratio': se_ratio, 'skip': skip, 'repeat': repeats[j],
-                    'inverted_bottleneck': inverted_bottleneck
+                    'inverted_bottleneck': inverted_bottleneck,
+                    'bnorm': bnorm
                 }
                 if self.groups > 1: kwargs['groups'] = self.groups
                 modules.extend(
@@ -1249,8 +1333,9 @@ class ResidualRepeatWav2Letter(nn.Module):
             kwargs = {
                 '_in': cnn_width, 'out': size, 'kernel_size': 31,
                 'padding': 15, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
-                'nonlinearity': nn.ReLU(inplace=True),
-                'se_ratio': 0, 'skip': False, 'repeat': 1
+                'nonlinearity': self.nonlinearity,
+                'se_ratio': 0, 'skip': False, 'repeat': 1,
+                'bnorm': bnorm
             }
             if self.groups > 1: kwargs['groups'] = self.groups
             modules.extend([Block(**kwargs)]) # no skips and attention
@@ -1258,19 +1343,27 @@ class ResidualRepeatWav2Letter(nn.Module):
             kwargs = {
                 '_in': size, 'out': size, 'kernel_size': 1,
                 'padding': 0, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
-                'nonlinearity': nn.ReLU(inplace=True),
-                'se_ratio': 0, 'skip': False, 'repeat': 1
+                'nonlinearity': self.nonlinearity,
+                'se_ratio': 0, 'skip': False, 'repeat': 1,
+                'bnorm': bnorm
             }
             if self.groups > 1: kwargs['groups'] = self.groups
             modules.extend([Block(**kwargs)]) # no skips and attention
+        elif self.decoder_type == 'transformer':
+            layer = nn.TransformerEncoderLayer(d_model=size,
+                                               nhead=8,
+                                               dim_feedforward=size * 2,
+                                               dropout=dropout)
+            decoder = nn.TransformerEncoder(layer, decoder_layers)
         elif self.decoder_type == 'plain_gru':
             # retain the large last kernel for now
             # make overall size smaller though
             kwargs = {
                 '_in': cnn_width, 'out': size, 'kernel_size': 31,
                 'padding': 15, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
-                'nonlinearity': nn.ReLU(inplace=True),
-                'se_ratio': 0, 'skip': False, 'repeat': 1
+                'nonlinearity': self.nonlinearity,
+                'se_ratio': 0, 'skip': False, 'repeat': 1,
+                'bnorm': bnorm
             }
             if self.groups > 1: kwargs['groups'] = self.groups
             modules.extend([Block(**kwargs)])  # no skips and attention
@@ -1280,7 +1373,7 @@ class ResidualRepeatWav2Letter(nn.Module):
                 'bidirectional': True, 'batch_norm': True, 'batch_first': False
             }
             rnns = []
-            for _ in range(2):
+            for _ in range(decoder_layers):
                 rnn = BatchRNN(**rnn_kwargs)
                 rnns.append(rnn)
             self.decoder = nn.Sequential(*rnns)
@@ -1290,8 +1383,9 @@ class ResidualRepeatWav2Letter(nn.Module):
             kwargs = {
                 '_in': cnn_width, 'out': size, 'kernel_size': 31,
                 'padding': 15, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
-                'nonlinearity': nn.ReLU(inplace=True),
-                'se_ratio': 0, 'skip': False, 'repeat': 1
+                'nonlinearity': self.nonlinearity,
+                'se_ratio': 0, 'skip': False, 'repeat': 1,
+                'bnorm': bnorm
             }
             if self.groups > 1: kwargs['groups'] = self.groups
             modules.extend([Block(**kwargs)])  # no skips and attention
@@ -1314,8 +1408,9 @@ class ResidualRepeatWav2Letter(nn.Module):
             kwargs = {
                 '_in': cnn_width, 'out': size, 'kernel_size': 31,
                 'padding': 15, 'stride': 1, 'bnm': bnm,'bias': not bnorm, 'dropout': dropout,
-                'nonlinearity': nn.ReLU(inplace=True),
-                'se_ratio': 0, 'skip': False, 'repeat': 1
+                'nonlinearity': self.nonlinearity,
+                'se_ratio': 0, 'skip': False, 'repeat': 1,
+                'bnorm': bnorm
             }
             if self.groups > 1: kwargs['groups'] = self.groups
             modules.extend([Block(**kwargs)])  # no skips and attention
@@ -1387,6 +1482,14 @@ class ResidualRepeatWav2Letter(nn.Module):
                 return self.decoder(
                     encoded.permute(2, 0, 1).contiguous()
                     ).permute(1, 2, 0).contiguous()
+            elif self.decoder_type == 'transformer':
+                encoded = self.layers(x)
+                # https://pytorch.org/docs/stable/nn.html#transformer
+                # src: (S, N, E)
+                # instead of  batch  * channels * length
+                return self.decoder(
+                    encoded.permute(2, 0, 1).contiguous()
+                    ).permute(1, 2, 0).contiguous()                    
             elif self.decoder_type == 'attention':
                 # transform cnn format (batch, channel, length)
                 # to rnn format (batch, length, channel)
@@ -1611,7 +1714,8 @@ class SeparableRepeatBlock(nn.Module):
                  dropout=0.1,
                  bnm=0.1,
                  nonlinearity=nn.ReLU(inplace=True),
-                 bias=True,
+                 bias=False,
+                 bnorm=True,
                  se_ratio=0,
                  skip=False,
                  repeat=1,
@@ -1626,10 +1730,13 @@ class SeparableRepeatBlock(nn.Module):
         has_se = (se_ratio is not None) and (0 < se_ratio <= 1)
         dropout = nn.Dropout(dropout)
 
-        if True:
-            norm_block = nn.BatchNorm1d
+        if bnorm:
+            if True:
+                norm_block = nn.BatchNorm1d
+            else:
+                norm_block = SwitchNorm1d
         else:
-            norm_block = SwitchNorm1d
+            norm_block = nn.Identity(
 
         last_out = out
         if inverted_bottleneck:
