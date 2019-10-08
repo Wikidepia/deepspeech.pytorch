@@ -38,7 +38,10 @@ supported_rnns = {
     'cnn_residual_repeat_sep_down8_groups8': None,
     'cnn_residual_repeat_sep_down8_groups8_plain_gru': None,
     'cnn_residual_repeat_sep_down8_groups8_attention': None,
-    'cnn_residual_repeat_sep_down8_groups8_double_supervision': None
+    'cnn_residual_repeat_sep_down8_groups8_double_supervision': None,
+    'cnn_residual_repeat_sep_down8_groups8_transformer': None,
+    'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nosc_nobn': None,
+    'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nobn': None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -894,7 +897,10 @@ class DeepSpeech(nn.Module):
                               'cnn_residual_repeat_sep_down8_groups8',
                               'cnn_residual_repeat_sep_down8_groups8_plain_gru',
                               'cnn_residual_repeat_sep_down8_groups8_attention',
-                              'cnn_residual_repeat_sep_down8_groups8_double_supervision']:
+                              'cnn_residual_repeat_sep_down8_groups8_double_supervision',
+                              'cnn_residual_repeat_sep_down8_groups8_transformer',
+                              'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nosc_nobn',
+                              'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nobn']:
             for m in self.rnns.modules():
                 if type(m) == nn.modules.conv.Conv1d:
                     seq_len = ((seq_len + 2 * m.padding[0] - m.dilation[0] * (m.kernel_size[0] - 1) - 1) / m.stride[0] + 1)
@@ -1489,7 +1495,7 @@ class ResidualRepeatWav2Letter(nn.Module):
                 # instead of  batch  * channels * length
                 return self.decoder(
                     encoded.permute(2, 0, 1).contiguous()
-                    ).permute(1, 2, 0).contiguous()                    
+                    ).permute(1, 2, 0).contiguous()
             elif self.decoder_type == 'attention':
                 # transform cnn format (batch, channel, length)
                 # to rnn format (batch, length, channel)
@@ -1736,7 +1742,7 @@ class SeparableRepeatBlock(nn.Module):
             else:
                 norm_block = SwitchNorm1d
         else:
-            norm_block = nn.Identity(
+            norm_block = nn.Identity
 
         last_out = out
         if inverted_bottleneck:
