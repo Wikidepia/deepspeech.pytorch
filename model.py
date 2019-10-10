@@ -494,7 +494,7 @@ class DeepSpeech(nn.Module):
                     'dilated_blocks': [],  # no dilation
                     'groups': 8,  # optimal group count, 512 // 12 = 64
                     'decoder_type': 'transformer',
-                    'decoder_layers': 2
+                    'decoder_layers': 4
                 })
             )
             self.fc = nn.Sequential(
@@ -1360,7 +1360,7 @@ class ResidualRepeatWav2Letter(nn.Module):
                                                nhead=8,
                                                dim_feedforward=size * 2,
                                                dropout=dropout)
-            decoder = nn.TransformerEncoder(layer, decoder_layers)
+            self.decoder = nn.TransformerEncoder(layer, decoder_layers)
         elif self.decoder_type == 'plain_gru':
             # retain the large last kernel for now
             # make overall size smaller though

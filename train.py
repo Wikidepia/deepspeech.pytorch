@@ -258,19 +258,25 @@ def build_optimizer(args_,
     if args_.weight_decay > 0:
         print('Using weight decay {} for SGD'.format(args_.weight_decay))
 
-    if args.double_supervision:
+    if args.double_supervision or 'transformer' in args.rnn_type:
         import itertools
 
-        adam_lr = 1e-4 # / 10
+        adam_lr = 1e-4  # / 10
         sgd_lr = args_.lr
 
         print('Using double supervision, SGD with clipping for CTC, ADAM for s2s')
         print('SGD LR {} / ADAM LR {}'.format(sgd_lr, adam_lr))
-
-        params_ctc = [model.rnns.layers.parameters(),
-                      model.rnns.ctc_decoder.parameters(),
-                      model.rnns.ctc_fc.parameters()]
-        params_adam = [model.rnns.s2s_decoder.parameters()]
+       
+        if 'transformer' in args.rnn_type:
+            print('Using transformer-type double optimizer')
+            params_ctc = [model.rnns.layers.parameters()]               
+            params_adam = [model.rnns.decoder.parameters(),
+                           model.fc.parameters()]
+        else:
+            params_ctc = [model.rnns.layers.parameters(),
+                          model.rnns.ctc_decoder.parameters(),
+                          model.rnns.ctc_fc.parameters()]            
+            params_adam = [model.rnns.s2s_decoder.parameters()]
 
         ctc_optimizer = torch.optim.SGD(itertools.chain(*params_ctc),
                                         lr=args_.lr,
@@ -473,7 +479,7 @@ class LRPlotWindow:
 def get_lr():
     if args.use_lookahead:
         return optimizer.optimizer.state_dict()['param_groups'][0]['lr']
-    if args.double_supervision:
+    if args.double_supervision or 'transformer' in args.rnn_type:
         # SGD state
         optim_state = optimizer.optimizers[0].state_dict()
     else:
@@ -483,7 +489,7 @@ def get_lr():
 
 def set_lr(lr):
     print('Learning rate annealed to: {lr:.6g}'.format(lr=lr))
-    if args.double_supervision:
+    if args.double_supervision or 'transformer' in args.rnn_type:
         # ADAM's LR typically is set 10x lower than SGD
         sgd_optim_state = optimizer.optimizers[0].state_dict()
         sgd_optim_state['param_groups'][0]['lr'] = lr
@@ -1601,7 +1607,7 @@ if __name__ == '__main__':
         if args.use_lookahead:
             model = model.to(device)
 
-        if args.double_supervision:
+        if args.double_supervision or 'transformer' in args.rnn_type:
             optimizer = build_optimizer(args,
                                         model=model)
         else:
