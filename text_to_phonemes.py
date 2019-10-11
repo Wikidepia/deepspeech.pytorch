@@ -2,6 +2,7 @@
 # use in a separate container with python 3.6, install dawg with conda
 # g2p contains TF, therefore unclear how to utilize all CPU cores ...
 import os
+import re
 import sys
 import warnings
 import pandas as pd 
@@ -36,25 +37,35 @@ def _apply_lst(args):
 def process_text_file(tup):
     (path, target_path) = tup
     global your_transcriptor
-    try:
-        if os.path.isfile(target_path):
-            pass
-            # os.remove(target_path)
-            # print('{} was present, so removed'.format(target_path))
-            # print('{} was present, so ignored'.format(target_path))
-        else:
+
+    if os.path.isfile(target_path):
+        pass
+        # os.remove(target_path)
+        # print('{} was present, so removed'.format(target_path))
+        # print('{} was present, so ignored'.format(target_path))
+    else:
+        try:
             with open(path, 'r', encoding="utf-8") as file:
-                text = file.read().replace('\n', '')
+                text = file.read().replace('\n', '').replace('*', '')
                 text = replace_encoded(text)
+                text = trim_string_lower(text)
             transcription = ' '.join(['-'.join(_[0]) for _
                                     in your_transcriptor.transcribe(text.split(' '))])
 
             with open(target_path, "w") as transcription_file:
                 print(transcription, file=transcription_file)
-        return text, transcription
-    except:
-        return ''
 
+            return text, transcription
+        except:
+            print('Error with {}'.format(text))
+            return text, ''
+
+
+
+def trim_string_lower(string):
+    # remove extra spaces, remove trailing spaces, lower the case
+    return re.sub('\s+',' ',string).strip().lower()    
+    
 
 def read_manifest(manifest_path):
     return pd.read_csv(manifest_path,
@@ -80,7 +91,9 @@ def replace_encoded(text):
         text = ''.join(_text)
     return text
 
-manifests = ['../data/manifests/train_v05_cleaned_asr_10s.csv']
+
+manifests = ['../data/manifests/val_v05_cleaned_asr.csv',
+             '../data/manifests/taptaxi_izhevsk_checked_14h.csv']
 
 df = pd.concat([read_manifest(_) for _ in manifests])
 

@@ -54,7 +54,11 @@ parser.add_argument('--phonemes-path', default='phonemes_ru.json', help='Contain
 parser.add_argument('--use-bpe', dest='use_bpe', action='store_true', help='Use sentencepiece BPE tokens')
 parser.add_argument('--sp-model', dest='sp_model', default='data/spm_train_v05_cleaned_asr_10s_phoneme.model',
                     type=str, help='Pre-trained sentencepiece model')
+
+
 parser.add_argument('--use-phonemes',  action='store_true', default=False)
+parser.add_argument('--phonemes-only',  action='store_true', default=False)
+
 
 parser.add_argument('--batch-similar-lens', dest='batch_similar_lens', action='store_true',
                     help='Force usage of sampler that batches items with similar duration together')
@@ -1555,7 +1559,7 @@ if __name__ == '__main__':
         if args.use_bpe:
             from data.bpe_labels import Labels as BPELabels
             labels = BPELabels(sp_model=args.sp_model,
-                               use_phonemes=False,
+                               use_phonemes=args.phonemes_only,
                                s2s_decoder=args.use_attention or args.double_supervision,
                                double_supervision=False,
                                naive_split=args.naive_split)
@@ -1649,7 +1653,8 @@ if __name__ == '__main__':
                                        curriculum_filepath=args.curriculum,
                                        use_attention=args.use_attention,
                                        double_supervision=args.double_supervision,
-                                       naive_split=args.naive_split)
+                                       naive_split=args.naive_split,
+                                       phonemes_only=args.phonemes_only)
     test_audio_conf = {**audio_conf,
                        'noise_prob': 0,
                        'aug_prob_8khz':0,
@@ -1668,7 +1673,8 @@ if __name__ == '__main__':
                                       labels=labels, normalize=args.norm, augment=False,
                                       use_attention=args.use_attention or args.double_supervision,
                                       double_supervision=False,
-                                      naive_split=args.naive_split)
+                                      naive_split=args.naive_split,
+                                      phonemes_only=args.phonemes_only)
 
     # if file is specified
     # separate train validation wo domain shift
@@ -1682,7 +1688,8 @@ if __name__ == '__main__':
                                               labels=labels, normalize=args.norm, augment=False,
                                               use_attention=args.use_attention or args.double_supervision,
                                               double_supervision=False,
-                                              naive_split=args.naive_split)
+                                              naive_split=args.naive_split,
+                                              phonemes_only=args.phonemes_only)
 
     if args.reverse_sort:
         # XXX: A hack to test max memory load.

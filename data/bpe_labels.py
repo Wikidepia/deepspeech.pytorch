@@ -45,7 +45,7 @@ class Labels:
     def __init__(self,
                  use_phonemes=False,
                  sp_model='data/spm_train_v05_cleaned_asr_10s_phoneme.model',
-                 sp_model_phoneme='data/phoneme_spm_train_v05_cleaned_asr_10s_phoneme.model',
+                 sp_model_phoneme='data/phoneme_cleaned_v5_spm_1000.model',
                  naive_split_list='data/naive_syllables.pickle',
                  naive_split=False,
                  sp_space_token='▁',
@@ -62,8 +62,11 @@ class Labels:
         }
         print(kwargs)
         if use_phonemes:
-            raise NotImplementedError('Phonemes not backported')
-        if (s2s_decoder and not double_supervision) or (not s2s_decoder and not double_supervision):
+            self.labels = _Labels({**kwargs,
+                                   'use_phonemes': True,
+                                   'use_phonemes_wo_spaces': True})
+            self.label_list = self.labels.label_list
+        elif (s2s_decoder and not double_supervision) or (not s2s_decoder and not double_supervision):
             # just an ordinary decoder
             self.labels = _Labels(**kwargs)
             self.label_list = self.labels.label_list
@@ -91,11 +94,15 @@ class _Labels:
                  use_phonemes=False,
                  naive_split=False,
                  sp_model='data/spm_train_v05_cleaned_asr_10s_phoneme.model',
-                 sp_model_phoneme='data/phoneme_spm_train_v05_cleaned_asr_10s_phoneme.model',
+                 sp_model_phoneme='data/phoneme_cleaned_v5_spm_1000.model',
                  naive_split_list='data/naive_syllables.pickle',
                  sp_space_token='▁',
-                 s2s_decoder=False):
+                 s2s_decoder=False,
+                 use_phonemes_wo_spaces=False
+                 ):
         self.use_phonemes = use_phonemes
+        if use_phonemes_wo_spaces:
+            self.use_phonemes_wo_spaces = use_phonemes_wo_spaces
         # will not be used
         # if sp is trained with coverage of 1.0
         # and default params
@@ -107,6 +114,7 @@ class _Labels:
         self.naive_split = naive_split
 
         assert self.naive_split + self.s2s_decoder < 2
+        assert self.use_phonemes_wo_spaces == self.use_phonemes
 
         if self.naive_split:
             pieces = upkl(naive_split_list)
@@ -118,13 +126,15 @@ class _Labels:
             print('Test naive syllable encoding {}'.format(sp_transcript))
         else:
             self.spm = sp.SentencePieceProcessor()
-            if self.use_phonemes:
+            if self.use_phonemes or self.use_phonemes_wo_spaces:
                 self.spm.Load(sp_model_phoneme)
             else:
                 self.spm.Load(sp_model)
             sp_tokens = self.spm.get_piece_size()
-            print('Sentencepiece model loaded, {} tokens'.format(sp_tokens))
-            print('Test encoding of the sp model {}'.format(self.spm.encode_as_pieces('пушистый рыжий котик')))
+
+            if not self.use_phonemes:
+                print('Sentencepiece model loaded, {} tokens'.format(sp_tokens))
+                print('Test encoding of the sp model {}'.format(self.spm.encode_as_pieces('пушистый рыжий котик')))
 
             pieces = pd.DataFrame([{'piece_id': i,
                                     'piece_str': self.spm.IdToPiece(id=i),
@@ -144,15 +154,16 @@ class _Labels:
             self.labels_map[key] = len(self.labels_map)
             self.label_list.append(key)
 
+        # only for ctc loss
         if not self.s2s_decoder:
-            # only for ctc loss
             self.labels_map["2"] = len(self.labels_map)
             self.label_list.append("2")
 
         # both for ctc and attention
         # predict " " as a separate token
-        self.labels_map[" "] = len(self.labels_map)
-        self.label_list.append(" ")
+        if not self.use_phonemes_wo_spaces:
+            self.labels_map[" "] = len(self.labels_map)
+            self.label_list.append(" ")
 
         if self.s2s_decoder:
             self.labels_map["["] = len(self.labels_map)  # sos token
@@ -165,10 +176,11 @@ class _Labels:
         assert len(self.labels_map) == len(self.label_list)
 
         self.labels_map_reverse = {v: k for k, v in self.labels_map.items()}
-        print('Test whole bpe class {}'.format(self.parse('пушистый рыжий котик')))
+        if not self.use_phonemes:
+            print('Test whole bpe class {}'.format(self.parse('пушистый рыжий котик')))
 
     def encode_phonemes(self, text):
-        text = text.replace('\n','')
+        text = text.replace('\n', '')
         out = []
         words = text.split(' ')
         for i, word in enumerate(words):
@@ -209,22 +221,15 @@ class _Labels:
             fake_encoded = self.encode_phonemes(text)
             sp_transcript = self.spm.encode_as_pieces(fake_encoded)
 
-            out = []
-            for word in sp_transcript:
-                if word == self.sp_space_token:
-                    out.append(' ')
-                else:
-                    for char in word:
-                        out.append(fake_2_phoneme[char])
-            try:
-                # convert back and check
-                assert str(text.replace('-','')).strip() == str(''.join(out)).strip()
-            except Exception as e:
-                print('Error {} with {}'.format(str(e),
-                                                text))
+            (check,
+             original_trimmed,
+             back_decoded) = self.check_phoneme_bpe_encoding(text,
+                                                             sp_transcript)
+            # strict
+            assert check
         elif self.naive_split:
             sp_transcript = [naive_syllable_split(word) for word in text.split(' ')]
-            sp_transcript = reduce(lambda a,b:a+[' ']+b,
+            sp_transcript = reduce(lambda a, b: a+[' ']+b,
                                    sp_transcript)
         else:
             sp_transcript = self.spm.encode_as_pieces(text)
@@ -239,7 +244,8 @@ class _Labels:
                     pass
                 elif token == self.sp_space_token:
                     # replace spm space token with our space
-                    code = self.labels_map[' ']
+                    if not self.use_phonemes_wo_spaces:
+                        code = self.labels_map[' ']
                 else:
                     code = self.labels_map[token]
                     if not self.s2s_decoder:
@@ -255,6 +261,28 @@ class _Labels:
 
         # print(transcript, self.render_transcript(transcript))
         return transcript
+
+    def check_phoneme_bpe_encoding(self,
+                                   text,
+                                   sp_transcript):
+        out = []
+        for word in sp_transcript:
+            if word == self.sp_space_token:
+                out.append(' ')
+            else:
+                for char in word:
+                    out.append(fake_2_phoneme[char])
+
+        original_trimmed = str(text.replace('-', '')).strip() 
+        back_decoded = str(''.join(out)).strip()
+        try:
+            # convert back and check
+            assert original_trimmed == back_decoded
+            return True, original_trimmed, back_decoded
+        except Exception as e:
+            print('Error {} with {}'.format(str(e),
+                                            text))
+            return False, original_trimmed, back_decoded
 
     def render_transcript(self, codes):
         if self.use_phonemes:
