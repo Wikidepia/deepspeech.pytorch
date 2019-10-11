@@ -62,9 +62,10 @@ class Labels:
         }
         print(kwargs)
         if use_phonemes:
-            self.labels = _Labels({**kwargs,
-                                   'use_phonemes': True,
-                                   'use_phonemes_wo_spaces': True})
+            only_phonemes_kwargs = {**kwargs,
+                                    'use_phonemes': True,
+                                    'use_phonemes_wo_spaces': True}
+            self.labels = _Labels(**only_phonemes_kwargs)
             self.label_list = self.labels.label_list
         elif (s2s_decoder and not double_supervision) or (not s2s_decoder and not double_supervision):
             # just an ordinary decoder
@@ -103,6 +104,7 @@ class _Labels:
         self.use_phonemes = use_phonemes
         if use_phonemes_wo_spaces:
             self.use_phonemes_wo_spaces = use_phonemes_wo_spaces
+            assert self.use_phonemes_wo_spaces == self.use_phonemes            
         # will not be used
         # if sp is trained with coverage of 1.0
         # and default params
@@ -114,7 +116,6 @@ class _Labels:
         self.naive_split = naive_split
 
         assert self.naive_split + self.s2s_decoder < 2
-        assert self.use_phonemes_wo_spaces == self.use_phonemes
 
         if self.naive_split:
             pieces = upkl(naive_split_list)
@@ -161,9 +162,11 @@ class _Labels:
 
         # both for ctc and attention
         # predict " " as a separate token
-        if not self.use_phonemes_wo_spaces:
-            self.labels_map[" "] = len(self.labels_map)
-            self.label_list.append(" ")
+        
+        # if not self.use_phonemes_wo_spaces:  - leave space dangling
+        # but not 
+        self.labels_map[" "] = len(self.labels_map)
+        self.label_list.append(" ")
 
         if self.s2s_decoder:
             self.labels_map["["] = len(self.labels_map)  # sos token
@@ -240,6 +243,7 @@ class _Labels:
 
         for i, token in enumerate(sp_transcript):
             try:
+                code = None
                 if token in self.remove_sp_tokens:
                     pass
                 elif token == self.sp_space_token:
@@ -251,7 +255,8 @@ class _Labels:
                     if not self.s2s_decoder:
                         if transcript and transcript[-1] == code:
                             code = self.labels_map['2']  # double char for ctc
-                transcript.append(code)
+                if code:
+                    transcript.append(code)
             except Exception as e:
                 msg = 'Error {} with text {}, transcript {}'.format(str(e), text, sp_transcript)
                 logger.error(msg, enqueue=True)

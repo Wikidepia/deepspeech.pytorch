@@ -556,6 +556,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.ids = ids
         self.size = len(self.ids)
         self.use_bpe = audio_conf.get('use_bpe', False)
+        self.phonemes_only = phonemes_only
         if self.use_bpe:
             from data.bpe_labels import Labels as BPELabels
             self.labels = BPELabels(sp_model=audio_conf.get('sp_model', ''),  #  will raise error if model is invalid
@@ -719,7 +720,10 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         sample = self.ids[index]
         audio_path, transcript_path, dur = sample[0], sample[1], sample[2]
         spect = self.parse_audio(audio_path)
-        reference = self.parse_transcript(transcript_path)
+        if self.phonemes_only:
+            reference = self.parse_transcript(self.get_phoneme_path(transcript_path))
+        else:
+            reference = self.parse_transcript(transcript_path)
 
         if self.phoneme_count > 0:
             phoneme_path = self.get_phoneme_path(transcript_path)
