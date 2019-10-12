@@ -50,7 +50,8 @@ class Labels:
                  naive_split=False,
                  sp_space_token='▁',
                  s2s_decoder=False,
-                 double_supervision=False):
+                 double_supervision=False,
+                 omit_spaces=False):
         kwargs = {
             'use_phonemes': use_phonemes,
             'sp_model': sp_model,
@@ -69,6 +70,7 @@ class Labels:
             self.label_list = self.labels.label_list
         elif (s2s_decoder and not double_supervision) or (not s2s_decoder and not double_supervision):
             # just an ordinary decoder
+            kwargs = {**kwargs, 'omit_spaces': omit_spaces}
             self.labels = _Labels(**kwargs)
             self.label_list = self.labels.label_list
         elif not s2s_decoder and double_supervision:
@@ -99,12 +101,13 @@ class _Labels:
                  naive_split_list='data/naive_syllables.pickle',
                  sp_space_token='▁',
                  s2s_decoder=False,
-                 use_phonemes_wo_spaces=False
-                 ):
+                 use_phonemes_wo_spaces=False,
+                 omit_spaces=False):
+        self.omit_spaces = omit_spaces
         self.use_phonemes = use_phonemes
+        self.use_phonemes_wo_spaces = use_phonemes_wo_spaces        
         if use_phonemes_wo_spaces:
-            self.use_phonemes_wo_spaces = use_phonemes_wo_spaces
-            assert self.use_phonemes_wo_spaces == self.use_phonemes            
+            assert self.use_phonemes_wo_spaces == self.use_phonemes
         # will not be used
         # if sp is trained with coverage of 1.0
         # and default params
@@ -162,9 +165,9 @@ class _Labels:
 
         # both for ctc and attention
         # predict " " as a separate token
-        
+
         # if not self.use_phonemes_wo_spaces:  - leave space dangling
-        # but not 
+        # but not
         self.labels_map[" "] = len(self.labels_map)
         self.label_list.append(" ")
 
@@ -248,7 +251,8 @@ class _Labels:
                     pass
                 elif token == self.sp_space_token:
                     # replace spm space token with our space
-                    if not self.use_phonemes_wo_spaces:
+                    # or just omit the space
+                    if not self.use_phonemes_wo_spaces and not self.omit_spaces:
                         code = self.labels_map[' ']
                 else:
                     code = self.labels_map[token]
@@ -278,7 +282,7 @@ class _Labels:
                 for char in word:
                     out.append(fake_2_phoneme[char])
 
-        original_trimmed = str(text.replace('-', '')).strip() 
+        original_trimmed = str(text.replace('-', '')).strip()
         back_decoded = str(''.join(out)).strip()
         try:
             # convert back and check

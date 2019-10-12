@@ -526,7 +526,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                  use_attention=False,
                  double_supervision=False,
                  naive_split=False,
-                 phonemes_only=False):
+                 phonemes_only=False,
+                 omit_spaces=False):
         """
         Dataset that loads tensors via a csv containing file paths to audio files and transcripts separated by
         a comma. Each new line is a different sample. Example below:
@@ -563,7 +564,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                                     use_phonemes=phonemes_only,
                                     s2s_decoder=use_attention,
                                     double_supervision=double_supervision,
-                                    naive_split=naive_split)
+                                    naive_split=naive_split,
+                                    omit_spaces=omit_spaces)
         else:
             self.labels = Labels(labels)
 

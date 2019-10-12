@@ -58,7 +58,7 @@ parser.add_argument('--sp-model', dest='sp_model', default='data/spm_train_v05_c
 
 parser.add_argument('--use-phonemes',  action='store_true', default=False)
 parser.add_argument('--phonemes-only',  action='store_true', default=False)
-
+parser.add_argument('--omit-spaces',  action='store_true', default=False)
 
 parser.add_argument('--batch-similar-lens', dest='batch_similar_lens', action='store_true',
                     help='Force usage of sampler that batches items with similar duration together')
@@ -270,16 +270,16 @@ def build_optimizer(args_,
 
         print('Using double supervision, SGD with clipping for CTC, ADAM for s2s')
         print('SGD LR {} / ADAM LR {}'.format(sgd_lr, adam_lr))
-       
+
         if 'transformer' in args.rnn_type:
             print('Using transformer-type double optimizer')
-            params_ctc = [model.rnns.layers.parameters()]               
+            params_ctc = [model.rnns.layers.parameters()]
             params_adam = [model.rnns.decoder.parameters(),
                            model.fc.parameters()]
         else:
             params_ctc = [model.rnns.layers.parameters(),
                           model.rnns.ctc_decoder.parameters(),
-                          model.rnns.ctc_fc.parameters()]            
+                          model.rnns.ctc_fc.parameters()]
             params_adam = [model.rnns.s2s_decoder.parameters()]
 
         ctc_optimizer = torch.optim.SGD(itertools.chain(*params_ctc),
@@ -1562,7 +1562,8 @@ if __name__ == '__main__':
                                use_phonemes=args.phonemes_only,
                                s2s_decoder=args.use_attention or args.double_supervision,
                                double_supervision=False,
-                               naive_split=args.naive_split)
+                               naive_split=args.naive_split,
+                               omit_spaces=args.omit_spaces)
             # list instead of string
             labels = labels.label_list
             # in case of double supervision just use the longer
@@ -1654,7 +1655,8 @@ if __name__ == '__main__':
                                        use_attention=args.use_attention,
                                        double_supervision=args.double_supervision,
                                        naive_split=args.naive_split,
-                                       phonemes_only=args.phonemes_only)
+                                       phonemes_only=args.phonemes_only,
+                                       omit_spaces=args.omit_spaces)
     test_audio_conf = {**audio_conf,
                        'noise_prob': 0,
                        'aug_prob_8khz':0,
@@ -1674,7 +1676,8 @@ if __name__ == '__main__':
                                       use_attention=args.use_attention or args.double_supervision,
                                       double_supervision=False,
                                       naive_split=args.naive_split,
-                                      phonemes_only=args.phonemes_only)
+                                      phonemes_only=args.phonemes_only,
+                                      omit_spaces=args.omit_spaces)
 
     # if file is specified
     # separate train validation wo domain shift
@@ -1689,7 +1692,8 @@ if __name__ == '__main__':
                                               use_attention=args.use_attention or args.double_supervision,
                                               double_supervision=False,
                                               naive_split=args.naive_split,
-                                              phonemes_only=args.phonemes_only)
+                                              phonemes_only=args.phonemes_only,
+                                              omit_spaces=args.omit_spaces)
 
     if args.reverse_sort:
         # XXX: A hack to test max memory load.
