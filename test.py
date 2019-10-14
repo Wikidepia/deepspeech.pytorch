@@ -4,14 +4,15 @@ import argparse
 
 import gc
 import torch
+import pickle
 import numpy as np
 from tqdm import tqdm
 
-from data.data_loader_aug import SpectrogramDataset, AudioDataLoader
-from data.utils import get_cer_wer
-from decoder import GreedyDecoder
 from model import DeepSpeech
+from decoder import GreedyDecoder
+from data.utils import get_cer_wer
 from opts import add_decoder_args, add_inference_args
+from data.data_loader_aug import SpectrogramDataset, AudioDataLoader
 
 parser = argparse.ArgumentParser(description='DeepSpeech transcription')
 parser = add_inference_args(parser)
@@ -31,6 +32,9 @@ parser.add_argument('--data-parallel', dest='data_parallel', action='store_true'
                     help='Use data parallel')
 parser.add_argument('--report-file', metavar='DIR', default='data/test_report.csv', help="Filename to save results")
 parser.add_argument('--bpe-as-lists', action="store_true", help="save BPE results as eval lists")
+
+parser.add_argument('--save-confusion-matrix', action="store_true")
+
 parser.add_argument('--norm_text', action="store_true", help="replace 2's")
 parser.add_argument('--predict_2_heads', action="store_true", help="save both ctc decoder head and attention head outputs")
 
@@ -39,6 +43,73 @@ no_decoder_args = parser.add_argument_group("No Decoder Options", "Configuration
 no_decoder_args.add_argument('--output-path', default=None, type=str, help="Where to save raw acoustic output")
 parser = add_decoder_args(parser)
 args = parser.parse_args()
+
+
+def pckl(obj,path):
+    with open(path, 'wb') as handle:
+        pickle.dump(obj, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def upkl(path):
+    with open(path, 'rb') as handle:
+        _ = pickle.load(handle)
+    return _
+
+
+def update_conf_counter(conf_counter,
+                        softmax_out):
+
+    global labels
+    print(softmax_out.size())
+
+    # batch_size = softmax_out.size(0)
+    # seq_len = softmax_out.size(1)
+    classes = softmax_out.size(2)
+
+    assert softmax_out.max().item() <= 1.0
+    # batch x sequence x labels
+    assert classes == len(labels)
+
+    blank_index = labels.index('_')
+    space_index = labels.index(' ')
+    double_index = labels.index('2')
+
+    ths = 0.05  # zero out all probs below this one
+    top_tokens = 10  # take only top 10 tokens if there are more than 10
+
+    out_masked = softmax_out.clone()
+    out_masked = out_masked.view(-1,
+                                 classes)
+    _, max_indices = out_masked.max(dim=1)
+
+    # zero out whole samples
+    # exclude blank token
+    # exclude 2 and space tokens
+    out_masked[max_indices == blank_index, :] = 0
+    out_masked[max_indices == space_index, :] = 0
+    out_masked[max_indices == double_index, :] = 0
+
+    # exclude all small values
+    out_masked[out_masked < ths] = 0
+
+    # get the non-zero idx cases
+    nonzero_idx = out_masked.nonzero()
+    non_zero_predict_idx = nonzero_idx[:, 0].unique_consecutive()
+    out_masked = out_masked[non_zero_predict_idx, :]
+
+    # get confusion tuples
+    _, sort_indices = out_masked.sort(dim=1, descending=True)
+
+    for i, idx in enumerate(sort_indices):
+        top_probs = out_masked[i, sort_indices[i, :top_tokens]]
+        top_value_count = (top_probs > ths).sum()
+
+        if top_value_count > 1:
+            for j in range(1, top_value_count):
+                conf_counter['{}_{}'.format(labels[idx[0].item()],
+                                            labels[idx[j].item()])] += 1
+
+    return conf_counter
 
 if __name__ == '__main__':
     torch.set_grad_enabled(False)
@@ -125,8 +196,19 @@ if __name__ == '__main__':
     # check calculation
     avg_total_wer, avg_total_cer = 0, 0
 
+    if args.save_confusion_matrix:
+        from collections import Counter
+        conf_counter = Counter()
+        confusion_matrix_path = args.report_file.replace('.csv',
+                                                         '_confusion.pickle')
+
     processed_files = []
     for i, data in tqdm(enumerate(test_loader), total=len(test_loader)):
+        # save every 100 batches
+        if (i + 1) % 100 == 0:
+            pckl(conf_counter, confusion_matrix_path)
+            print('Confusion matrix saved to {}'.format(confusion_matrix_path))
+
         inputs, targets, filenames, input_percentages, target_sizes = data
         input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
 
@@ -149,6 +231,10 @@ if __name__ == '__main__':
             out0, out, output_sizes, _, _ = model_outputs
         else:
             out0, out, output_sizes = model_outputs
+            if args.save_confusion_matrix:
+                conf_counter = update_conf_counter(conf_counter,
+                                                   out.cpu())
+
         del inputs, targets, input_percentages, target_sizes, model_outputs
 
         if decoder is None: continue
@@ -231,7 +317,7 @@ if __name__ == '__main__':
                         ctc_transcript,
                         cer / cer_ref,
                         wer / wer_ref
-                    ])                    
+                    ])
                 else:
                     report_file.writerow([
                         filenames[x],
@@ -275,3 +361,4 @@ if __name__ == '__main__':
         import pickle
         with open(args.output_path, 'w') as f:
             f.write('\n'.join(processed_files))
+
