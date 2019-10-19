@@ -71,7 +71,7 @@ parser.add_argument('--denoise', action='store_true', help='Train a denoising he
 parser.add_argument('--use-attention', action='store_true', help='Use attention based decoder instead of CTC')
 parser.add_argument('--double-supervision', action='store_true', help='Use both CTC and attention in sequence')
 parser.add_argument('--naive-split', action='store_true', help='Use a naive DS2 inspired syllable split')
-
+parser.add_argument('--grapheme-phoneme', action='store_true', help='Use both phonemes and graphemes with BPE to train from scratch')
 
 parser.add_argument('--window-size', default=.02, type=float, help='Window size for spectrogram in seconds')
 parser.add_argument('--window-stride', default=.01, type=float, help='Window stride for spectrogram in seconds')
@@ -79,7 +79,10 @@ parser.add_argument('--window', default='hamming', help='Window type for spectro
 parser.add_argument('--hidden-size', default=800, type=int, help='Hidden size of RNNs')
 parser.add_argument('--cnn-width', default=256, type=int, help='w2l-like network width')
 parser.add_argument('--hidden-layers', default=6, type=int, help='Number of RNN layers')
+
 parser.add_argument('--rnn-type', default='gru', help='Type of the RNN. rnn|gru|lstm are supported')
+parser.add_argument('--decoder-layers', default=4, type=int)
+
 parser.add_argument('--dropout', default=0, type=float, help='Fixed dropout for CNN based models')
 parser.add_argument('--epochs', default=70, type=int, help='Number of training epochs')
 parser.add_argument('--cuda', dest='cuda', action='store_true', help='Use cuda to train model')
@@ -262,7 +265,7 @@ def build_optimizer(args_,
     if args_.weight_decay > 0:
         print('Using weight decay {} for SGD'.format(args_.weight_decay))
 
-    if args.double_supervision or 'transformer' in args.rnn_type:
+    if args.double_supervision or 'transformer' in args.rnn_type or args.grapheme_phoneme:
         import itertools
 
         adam_lr = 1e-4  # / 10
@@ -483,7 +486,7 @@ class LRPlotWindow:
 def get_lr():
     if args.use_lookahead:
         return optimizer.optimizer.state_dict()['param_groups'][0]['lr']
-    if args.double_supervision or 'transformer' in args.rnn_type:
+    if args.double_supervision or 'transformer' in args.rnn_type or args.grapheme_phoneme:
         # SGD state
         optim_state = optimizer.optimizers[0].state_dict()
     else:
@@ -493,7 +496,7 @@ def get_lr():
 
 def set_lr(lr):
     print('Learning rate annealed to: {lr:.6g}'.format(lr=lr))
-    if args.double_supervision or 'transformer' in args.rnn_type:
+    if args.double_supervision or 'transformer' in args.rnn_type or args.grapheme_phoneme:
         # ADAM's LR typically is set 10x lower than SGD
         sgd_optim_state = optimizer.optimizers[0].state_dict()
         sgd_optim_state['param_groups'][0]['lr'] = lr
@@ -566,7 +569,7 @@ def check_model_quality(epoch, checkpoint, train_loss, train_cer, train_wer):
 
             inputs = inputs.to(device)
 
-            if args.use_phonemes:
+            if args.use_phonemes or args.grapheme_phoneme:
                 (logits, probs,
                  output_sizes,
                  phoneme_logits, phoneme_probs) = model(inputs, input_sizes)
@@ -1403,7 +1406,7 @@ def train(from_epoch, from_iter, from_checkpoint):
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    assert args.use_phonemes + args.denoise < 2
+    assert args.use_phonemes + args.denoise + args.grapheme_phoneme < 2
     assert args.double_supervision + args.use_attention < 2
     # упячка, я идиот, убейте меня кто-нибудь
     if args.use_phonemes:
@@ -1608,7 +1611,8 @@ if __name__ == '__main__':
                            bidirectional=args.bidirectional,
                            bnm=args.batch_norm_momentum,
                            dropout=args.dropout,
-                           phoneme_count=len(phoneme_map) if args.use_phonemes else 0)
+                           phoneme_count=len(phoneme_map) if args.use_phonemes else 0,
+                           decoder_layers=args.decoder_layers)
         if args.use_lookahead:
             model = model.to(device)
 
