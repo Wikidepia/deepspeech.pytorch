@@ -497,7 +497,8 @@ class DeepSpeech(nn.Module):
                     'dilated_blocks': [],  # no dilation
                     'groups': 8,  # optimal group count, 512 // 12 = 64
                     'decoder_type': 'transformer',
-                    'decoder_layers': self._decoder_layers
+                    'decoder_layers': self._decoder_layers,
+                    'vary_cnn_width': False
                 })
             )
             self.fc = nn.Sequential(
@@ -522,7 +523,8 @@ class DeepSpeech(nn.Module):
                     'dilated_blocks': [],  # no dilation
                     'groups': 16,  # optimal group count, 1024 // 16 = 64
                     'decoder_type': 'transformer',
-                    'decoder_layers': self._decoder_layers
+                    'decoder_layers': self._decoder_layers,
+                    'vary_cnn_width': False
                 })
             )
             self.fc = nn.Sequential(
@@ -1257,6 +1259,12 @@ class ResidualRepeatWav2Letter(nn.Module):
         self.num_classes = config.num_classes if 'num_classes' in config else 0
         self.nonlinearity = config.nonlinearity if 'nonlinearity' in config else nn.ReLU(inplace=True)
         decoder_layers = config.decoder_layers if 'decoder_layers' in config else 2
+        vary_cnn_width = config.vary_cnn_width if 'vary_cnn_width' in config else False
+
+        if vary_cnn_width:
+            # start with vary_cnn_width // 4
+            # multiply by 2 after each downscaling layer
+            cnn_width = cnn_width // 4
 
         downsampled_blocks = []
         downsampled_subblocks = []
@@ -1356,6 +1364,9 @@ class ResidualRepeatWav2Letter(nn.Module):
                 modules.extend(
                     [Block(**kwargs)]
                 )
+            if vary_cnn_width and j < 2:
+                cnn_width *= 2 
+
         # add layer up-scaling
         if inverted_bottleneck:
             kwargs = {
