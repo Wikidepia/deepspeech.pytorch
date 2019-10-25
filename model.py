@@ -43,6 +43,7 @@ supported_rnns = {
     'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nosc_nobn': None,
     'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nobn': None,
     'cnn_residual_repeat_sep_down8_groups16_transformer': None,
+    'cnn_residual_repeat_sep_down8_groups12_transformer_variable': None
 }
 supported_rnns_inv = dict((v, k) for k, v in supported_rnns.items())
 
@@ -234,7 +235,7 @@ class DeepSpeech(nn.Module):
                  audio_conf=None,
                  bidirectional=True, context=20, bnm=0.1,
                  dropout=0, cnn_width=256,
-                 phoneme_count=0, decoder_layers=4 
+                 phoneme_count=0, decoder_layers=4
                  ):
         super(DeepSpeech, self).__init__()
 
@@ -529,7 +530,33 @@ class DeepSpeech(nn.Module):
             )
             self.fc = nn.Sequential(
                 nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
-            )            
+            )
+        elif self._rnn_type == 'cnn_residual_repeat_sep_down8_groups12_transformer_variable':  # add scale 8
+            size = rnn_hidden_size
+            self.rnns = ResidualRepeatWav2Letter(
+                DotDict({
+                    'size': rnn_hidden_size,  # here it defines model epilog size
+                    'bnorm': True,
+                    'bnm': self._bnm,
+                    'dropout': dropout,
+                    'cnn_width': self._cnn_width,  # cnn filters
+                    'not_glu': self._bidirectional,  # glu or basic relu
+                    'repeat_layers': self._hidden_layers,  # depth, only middle part
+                    'kernel_size': 7,
+                    'se_ratio': 0.2,
+                    'skip': True,
+                    'separable': True,
+                    'add_downsample': 4,
+                    'dilated_blocks': [],  # no dilation
+                    'groups': 12,  # optimal group count, 1024 // 16 = 64
+                    'decoder_type': 'transformer',
+                    'decoder_layers': self._decoder_layers,
+                    'vary_cnn_width': True
+                })
+            )
+            self.fc = nn.Sequential(
+                nn.Conv1d(in_channels=size, out_channels=num_classes, kernel_size=1)
+            ) 
         elif self._rnn_type == 'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nosc_nobn':  # add scale 8
             size = rnn_hidden_size
             self.rnns = ResidualRepeatWav2Letter(
@@ -848,6 +875,7 @@ class DeepSpeech(nn.Module):
                               'cnn_residual_repeat_sep_down8_groups8_plain_gru',
                               'cnn_residual_repeat_sep_down8_groups8_transformer',
                               'cnn_residual_repeat_sep_down8_groups16_transformer',
+                              'cnn_residual_repeat_sep_down8_groups12_transformer_variable',
                               'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nosc_nobn',
                               'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nobn']:
             x = x.squeeze(1)
@@ -931,6 +959,7 @@ class DeepSpeech(nn.Module):
                               'cnn_residual_repeat_sep_down8_groups8_double_supervision',
                               'cnn_residual_repeat_sep_down8_groups8_transformer',
                               'cnn_residual_repeat_sep_down8_groups16_transformer',
+                              'cnn_residual_repeat_sep_down8_groups12_transformer_variable',
                               'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nosc_nobn',
                               'cnn_residual_repeat_sep_down8_groups8_plain_gru_selu_nobn']:
             for m in self.rnns.modules():
@@ -1069,7 +1098,7 @@ class DeepSpeech(nn.Module):
             'bidirectional': model._bidirectional,
             'dropout': model._dropout,
             'cnn_width': model._cnn_width,
-            'decoder_layers': model._decoder_layers 
+            'decoder_layers': model._decoder_layers
         }
         if hasattr(model, '_phoneme_count'):
             package['phoneme_count'] = model._phoneme_count
@@ -1365,7 +1394,17 @@ class ResidualRepeatWav2Letter(nn.Module):
                     [Block(**kwargs)]
                 )
             if vary_cnn_width and j < 2:
-                cnn_width *= 2 
+                # transition layer
+                trans_kwargs = {**kwargs,
+                                'skip': False,
+                                'repeat': 1,
+                                'se_ratio': 0,
+                                '_in': cnn_width,
+                                'out': cnn_width * 2}
+                modules.extend(
+                    [Block(**trans_kwargs)]
+                )
+                cnn_width *= 2
 
         # add layer up-scaling
         if inverted_bottleneck:
