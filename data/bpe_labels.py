@@ -102,10 +102,16 @@ class _Labels:
                  sp_space_token='▁',
                  s2s_decoder=False,
                  use_phonemes_wo_spaces=False,
-                 omit_spaces=False):
+                 omit_spaces=False,
+                 subword_regularization=True):
+
+        self.subword_regularization = subword_regularization
+        self.uni_nbest = -1
+        self.temperature = 0.5
+
         self.omit_spaces = omit_spaces
         self.use_phonemes = use_phonemes
-        self.use_phonemes_wo_spaces = use_phonemes_wo_spaces        
+        self.use_phonemes_wo_spaces = use_phonemes_wo_spaces
         if use_phonemes_wo_spaces:
             assert self.use_phonemes_wo_spaces == self.use_phonemes
         # will not be used
@@ -238,7 +244,12 @@ class _Labels:
             sp_transcript = reduce(lambda a, b: a+[' ']+b,
                                    sp_transcript)
         else:
-            sp_transcript = self.spm.encode_as_pieces(text)
+            if self.subword_regularization:
+                sp_transcript = self.spm.sample_encode_as_pieces(text,
+                                                                 self.uni_nbest,
+                                                                 self.temperature)
+            else:
+                sp_transcript = self.spm.encode_as_pieces(text)
 
         # print(sp_transcript)
         if self.s2s_decoder:
