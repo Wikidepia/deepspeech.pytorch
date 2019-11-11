@@ -51,7 +51,8 @@ class Labels:
                  sp_space_token='▁',
                  s2s_decoder=False,
                  double_supervision=False,
-                 omit_spaces=False):
+                 omit_spaces=False,
+                 subword_regularization=False):
         kwargs = {
             'use_phonemes': use_phonemes,
             'sp_model': sp_model,
@@ -59,7 +60,8 @@ class Labels:
             'sp_space_token': sp_space_token,
             's2s_decoder': s2s_decoder,
             'naive_split_list': naive_split_list,
-            'naive_split': naive_split
+            'naive_split': naive_split,
+            'subword_regularization': subword_regularization
         }
         print(kwargs)
         if use_phonemes:
@@ -103,11 +105,11 @@ class _Labels:
                  s2s_decoder=False,
                  use_phonemes_wo_spaces=False,
                  omit_spaces=False,
-                 subword_regularization=True):
+                 subword_regularization=False):
 
         self.subword_regularization = subword_regularization
-        self.uni_nbest = -1
-        self.temperature = 0.5
+        self.uni_nbest = 3
+        self.temperature = 0.8
 
         self.omit_spaces = omit_spaces
         self.use_phonemes = use_phonemes

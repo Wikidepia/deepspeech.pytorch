@@ -44,6 +44,7 @@ parser.add_argument('--curriculum', metavar='DIR',
                     help='path to curriculum file', default='')
 parser.add_argument('--use-curriculum',  action='store_true', default=False)
 parser.add_argument('--curriculum-ratio', default=0.5, type=float)
+parser.add_argument('--cl-point', default=0.1, type=float)
 parser.add_argument('--sample-rate', default=16000, type=int, help='Sample rate')
 parser.add_argument('--batch-size', default=20, type=int, help='Batch size for training')
 parser.add_argument('--val-batch-size', default=20, type=int, help='Batch size for training')
@@ -55,10 +56,10 @@ parser.add_argument('--use-bpe', dest='use_bpe', action='store_true', help='Use 
 parser.add_argument('--sp-model', dest='sp_model', default='data/spm_train_v05_cleaned_asr_10s_phoneme.model',
                     type=str, help='Pre-trained sentencepiece model')
 
-
 parser.add_argument('--use-phonemes',  action='store_true', default=False)
 parser.add_argument('--phonemes-only',  action='store_true', default=False)
 parser.add_argument('--omit-spaces',  action='store_true', default=False)
+parser.add_argument('--subword-regularization',  action='store_true', default=False)
 
 parser.add_argument('--batch-similar-lens', dest='batch_similar_lens', action='store_true',
                     help='Force usage of sampler that batches items with similar duration together')
@@ -1246,7 +1247,8 @@ def init_train_set(epoch, from_iter):
     #train_dataset.set_curriculum_epoch(epoch, sample=True)
     train_dataset.set_curriculum_epoch(epoch,
                                        sample=args.use_curriculum,
-                                       sample_size=args.curriculum_ratio)
+                                       sample_size=args.curriculum_ratio,
+                                       cl_point=args.cl_point)
     global train_loader, train_sampler
     if not args.distributed:
         if args.batch_similar_lens:
@@ -1501,8 +1503,8 @@ if __name__ == '__main__':
             if args.use_bpe:
                 from data.bpe_labels import Labels as BPELabels
                 labels = BPELabels(sp_model=args.sp_model,
-                                use_phonemes=False,
-                                s2s_decoder=args.use_attention)
+                                   use_phonemes=False,
+                                   s2s_decoder=args.use_attention)
                 # list instead of string
                 labels = labels.label_list
 
@@ -1514,8 +1516,14 @@ if __name__ == '__main__':
         # audio_conf['noise_dir'] = '../data/augs/*.wav'
         # audio_conf['noise_prob'] = 0.1
 
-        parameters = model.parameters()
-        optimizer = build_optimizer(args, parameters)
+        if args.double_supervision or 'transformer' in args.rnn_type:
+            optimizer = build_optimizer(args,
+                                        model=model)
+        else:
+            parameters = model.parameters()
+            optimizer = build_optimizer(args,
+                                        parameters_=parameters)
+
         if not args.finetune:  # Don't want to restart training
             model = model.to(device)
             # when adding phonemes, optimizer state is not full
@@ -1566,7 +1574,8 @@ if __name__ == '__main__':
                                s2s_decoder=args.use_attention or args.double_supervision,
                                double_supervision=False,
                                naive_split=args.naive_split,
-                               omit_spaces=args.omit_spaces)
+                               omit_spaces=args.omit_spaces,
+                               subword_regularization=args.subword_regularization)
             # list instead of string
             labels = labels.label_list
             # in case of double supervision just use the longer
@@ -1660,7 +1669,8 @@ if __name__ == '__main__':
                                        double_supervision=args.double_supervision,
                                        naive_split=args.naive_split,
                                        phonemes_only=args.phonemes_only,
-                                       omit_spaces=args.omit_spaces)
+                                       omit_spaces=args.omit_spaces,
+                                       subword_regularization=args.subword_regularization)
     test_audio_conf = {**audio_conf,
                        'noise_prob': 0,
                        'aug_prob_8khz':0,
@@ -1681,7 +1691,8 @@ if __name__ == '__main__':
                                       double_supervision=False,
                                       naive_split=args.naive_split,
                                       phonemes_only=args.phonemes_only,
-                                      omit_spaces=args.omit_spaces)
+                                      omit_spaces=args.omit_spaces,
+                                      subword_regularization=False) # turn off augs on val
 
     # if file is specified
     # separate train validation wo domain shift
@@ -1697,7 +1708,8 @@ if __name__ == '__main__':
                                               double_supervision=False,
                                               naive_split=args.naive_split,
                                               phonemes_only=args.phonemes_only,
-                                              omit_spaces=args.omit_spaces)
+                                              omit_spaces=args.omit_spaces,
+                                              subword_regularization=False) # turn off augs on val
 
     if args.reverse_sort:
         # XXX: A hack to test max memory load.

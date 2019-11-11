@@ -527,7 +527,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                  double_supervision=False,
                  naive_split=False,
                  phonemes_only=False,
-                 omit_spaces=False):
+                 omit_spaces=False,
+                 subword_regularization=False):
         """
         Dataset that loads tensors via a csv containing file paths to audio files and transcripts separated by
         a comma. Each new line is a different sample. Example below:
@@ -565,7 +566,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                                     s2s_decoder=use_attention,
                                     double_supervision=double_supervision,
                                     naive_split=naive_split,
-                                    omit_spaces=omit_spaces)
+                                    omit_spaces=omit_spaces,
+                                    subword_regularization=subword_regularization)
         else:
             self.labels = Labels(labels)
 
@@ -744,16 +746,17 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
 
     def set_curriculum_epoch(self, epoch,
                              sample=False,
-                             sample_size=0.5):
+                             sample_size=0.5,
+                             cl_point=0.10):
         if sample:
             full_epoch = sample_size * epoch
 
             if full_epoch < 10.0:
-                Curriculum.CL_POINT = 0.10
+                Curriculum.CL_POINT = cl_point
             elif full_epoch < 20.0:
-                Curriculum.CL_POINT = 0.10
+                Curriculum.CL_POINT = cl_point
             else:
-                Curriculum.CL_POINT = 0.10
+                Curriculum.CL_POINT = cl_point
 
             print('Set CL Point to be {}, full epochs elapsed {}'.format(Curriculum.CL_POINT,
                                                                          full_epoch))
