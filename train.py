@@ -1534,9 +1534,15 @@ if __name__ == '__main__':
                     optimizer.state_dict()['param_groups'][0]['lr']
                 ))
             except:
-                print('Just changing the LR in the optimizer')
-                # set_lr(package['optim_dict']['param_groups'][0]['lr'])
-                set_lr(args.lr)
+                if args.double_supervision or 'transformer' in args.rnn_type or args.grapheme_phoneme:
+                    optim_state = package['optim_dict'][0]
+                    lr = optim_state['param_groups'][0]['lr']
+                    print('Just setting the SGD LR {}'.format(lr))
+                    set_lr(lr)
+                else:
+                    print('Just changing the LR in the optimizer')
+                    # set_lr(package['optim_dict']['param_groups'][0]['lr'])
+                    set_lr(args.lr)
 
             start_epoch = int(package.get('epoch', 1)) - 1  # Index start at 0 for training
             start_iter = package.get('iteration', None)
