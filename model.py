@@ -236,9 +236,9 @@ class DeepSpeech(nn.Module):
                  nb_layers=6,
                  audio_conf=None,
                  bidirectional=True, context=20, bnm=0.1,
+                 kernel_size=7,
                  dropout=0, cnn_width=256,
-                 phoneme_count=0, decoder_layers=4
-                 ):
+                 phoneme_count=0, decoder_layers=4):
         super(DeepSpeech, self).__init__()
 
         # model metadata needed for serialization/deserialization
@@ -255,6 +255,7 @@ class DeepSpeech(nn.Module):
         self._dropout = dropout
         self._cnn_width = cnn_width
         self._decoder_layers = decoder_layers
+        self._kernel_size = kernel_size
 
         if phoneme_count > 0:
             self._phoneme_count = phoneme_count
@@ -304,7 +305,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.25,
                     'skip': True
                 })
@@ -329,7 +330,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True
                 })
@@ -354,7 +355,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable':True,
@@ -381,7 +382,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -409,7 +410,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -445,7 +446,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -468,7 +469,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -492,7 +493,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -518,7 +519,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -544,7 +545,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -570,7 +571,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -596,7 +597,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -622,7 +623,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': False,
                     'separable': True,
@@ -647,7 +648,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -672,7 +673,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -694,7 +695,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -716,7 +717,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -745,7 +746,7 @@ class DeepSpeech(nn.Module):
                     'cnn_width': self._cnn_width,  # cnn filters
                     'not_glu': self._bidirectional,  # glu or basic relu
                     'repeat_layers': self._hidden_layers,  # depth, only middle part
-                    'kernel_size': 7,
+                    'kernel_size': self._kernel_size,
                     'se_ratio': 0.2,
                     'skip': True,
                     'separable': True,
@@ -1156,7 +1157,8 @@ class DeepSpeech(nn.Module):
             'bidirectional': model._bidirectional,
             'dropout': model._dropout,
             'cnn_width': model._cnn_width,
-            'decoder_layers': model._decoder_layers
+            'decoder_layers': model._decoder_layers,
+            'kernel_size': model._kernel_size
         }
         if hasattr(model, '_phoneme_count'):
             package['phoneme_count'] = model._phoneme_count
