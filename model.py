@@ -238,7 +238,7 @@ class DeepSpeech(nn.Module):
                  bidirectional=True, context=20, bnm=0.1,
                  kernel_size=7,
                  dropout=0, cnn_width=256,
-                 phoneme_count=0, decoder_layers=4):
+                 phoneme_count=0, decoder_layers=4, decoder_girth=1):
         super(DeepSpeech, self).__init__()
 
         # model metadata needed for serialization/deserialization
@@ -256,6 +256,7 @@ class DeepSpeech(nn.Module):
         self._cnn_width = cnn_width
         self._decoder_layers = decoder_layers
         self._kernel_size = kernel_size
+        self._decoder_girth = decoder_girth
 
         if phoneme_count > 0:
             self._phoneme_count = phoneme_count
@@ -502,6 +503,7 @@ class DeepSpeech(nn.Module):
                     'groups': 8,  # optimal group count, 512 // 12 = 64
                     'decoder_type': 'transformer',
                     'decoder_layers': self._decoder_layers,
+                    'decoder_girth': self._decoder_girth,
                     'vary_cnn_width': False
                 })
             )
@@ -1070,6 +1072,8 @@ class DeepSpeech(nn.Module):
             'cnn_width': package.get('cnn_width', 0),
             'phoneme_count': package.get('phoneme_count', 0),
             'decoder_layers': package.get('decoder_layers', 4),
+            'kernel_size': package.get('kernel_size', 7),
+            'decoder_girth': package.get('decoder_girth', 1),
         }
         model = cls(**kwargs)
         model.load_state_dict(package['state_dict'])
@@ -1158,7 +1162,8 @@ class DeepSpeech(nn.Module):
             'dropout': model._dropout,
             'cnn_width': model._cnn_width,
             'decoder_layers': model._decoder_layers,
-            'kernel_size': model._kernel_size
+            'kernel_size': model._kernel_size,
+            'decoder_girth': model._decoder_girth,
         }
         if hasattr(model, '_phoneme_count'):
             package['phoneme_count'] = model._phoneme_count
@@ -1341,6 +1346,7 @@ class ResidualRepeatWav2Letter(nn.Module):
         padding = kernel_size // 2
         se_ratio = config.se_ratio
         skip = config.skip
+        decoder_girth = config.decoder_girth
 
         self.denoise = config.denoise if 'denoise' in config else False
         self.groups = config.groups if 'groups' in config else 1
@@ -1502,7 +1508,7 @@ class ResidualRepeatWav2Letter(nn.Module):
         elif self.decoder_type == 'transformer':
             layer = nn.TransformerEncoderLayer(d_model=size,
                                                nhead=8,
-                                               dim_feedforward=size * 1,
+                                               dim_feedforward=size * decoder_girth,
                                                dropout=dropout)
             self.decoder = nn.TransformerEncoder(layer, decoder_layers)
         elif self.decoder_type == 'plain_gru':

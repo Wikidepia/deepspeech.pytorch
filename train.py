@@ -80,10 +80,12 @@ parser.add_argument('--window', default='hamming', help='Window type for spectro
 parser.add_argument('--hidden-size', default=800, type=int, help='Hidden size of RNNs')
 parser.add_argument('--cnn-width', default=256, type=int, help='w2l-like network width')
 parser.add_argument('--kernel-size', default=7, type=int, help='cnn kernel size')
+
 parser.add_argument('--hidden-layers', default=6, type=int, help='Number of RNN layers')
 
 parser.add_argument('--rnn-type', default='gru', help='Type of the RNN. rnn|gru|lstm are supported')
 parser.add_argument('--decoder-layers', default=4, type=int)
+parser.add_argument('--decoder-girth', default=1, type=int)
 
 parser.add_argument('--dropout', default=0, type=float, help='Fixed dropout for CNN based models')
 parser.add_argument('--epochs', default=70, type=int, help='Number of training epochs')
@@ -1629,7 +1631,8 @@ if __name__ == '__main__':
                            dropout=args.dropout,
                            phoneme_count=len(phoneme_map) if args.use_phonemes else 0,
                            decoder_layers=args.decoder_layers,
-                           kernel_size=args.kernel_size)
+                           kernel_size=args.kernel_size,
+                           decoder_girth=args.decoder_girth)
         if args.use_lookahead:
             model = model.to(device)
 
