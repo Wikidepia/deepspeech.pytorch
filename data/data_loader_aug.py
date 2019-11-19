@@ -557,7 +557,9 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         # self.all_ids = ids
         self.curriculum = None
         self.all_ids = ids
-        self.ids = []  # reduce memory footprint when train from scratch?
+        # reduce memory footprint when train from scratch due to pytorch 
+        # due to dataloader forking cow strategy
+        self.ids = []
         self.size = len(self.all_ids)
         self.use_bpe = audio_conf.get('use_bpe', False)
         self.phonemes_only = phonemes_only
@@ -758,7 +760,12 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         super(SpectrogramDataset, self).__init__(audio_conf, cache_path, normalize, augment)
 
     def __getitem__(self, index):
-        sample = self.ids[index]
+        if len(self.ids) == 0:
+            # not using CR
+            # hence no set_curriculum_epoch was incurred
+            sample = self.all_ids[index]
+        else:
+            sample = self.ids[index]
         audio_path, transcript_path, dur = sample[0], sample[1], sample[2]
 
         spect = self.parse_audio(audio_path)
@@ -842,7 +849,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             'transcript': transcript,
             'offsets': offsets,
             'times_used': times_used,
-            'domain': self.curriculum[audio_path]['domain'],
+            'domain': self.curriculum[audio_path].get('domain', 'default_domain'),
             'duration': self.curriculum[audio_path]['duration'],
             'cer': cer,
             'wer': wer
@@ -853,11 +860,14 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         nonzero_time_used = 0
         temp_file = 'current_curriculum_state.txt'
         with open(fn, 'w') as f:
-            writer = csv.DictWriter(f, ['wav', 'text', 'transcript', 'offsets',
-                                        'times_used', 'cer', 'wer',
-                                        'duration'])
+            fields = ['wav', 'text', 'transcript', 'offsets',
+                      'times_used', 'cer', 'wer',
+                      'duration', 'domain']
+            writer = csv.DictWriter(f, fields)
             writer.writeheader()
             for cl in self.curriculum.values():
+                if 'domain' not in cl:
+                    cl['domain'] = 'default'
                 writer.writerow(cl)
                 if cl['times_used'] > 0:
                     nonzero_time_used += 1
