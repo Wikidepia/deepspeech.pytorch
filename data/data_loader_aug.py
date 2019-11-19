@@ -3,11 +3,13 @@ import shutil
 import hashlib
 
 import os
+import gc
 import math
 import random
 import subprocess
 from pathlib import Path
 from glob import glob
+from collections import Counter
 from tempfile import NamedTemporaryFile
 
 import librosa
@@ -548,15 +550,15 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         """
         with open(manifest_filepath, newline='') as f:
             reader = csv.reader(f)
-            ids = [(row[0], row[1], row[2] if len(row) > 2 else 0) for row in reader]
+            ids = [(self.parse_mf_row(row)) for row in reader]
         if max_items:
             ids = ids[:max_items]
         # print("Found entries:", len(ids))
         # self.all_ids = ids
         self.curriculum = None
         self.all_ids = ids
-        self.ids = ids
-        self.size = len(self.ids)
+        self.ids = []  # reduce memory footprint when train from scratch?
+        self.size = len(self.all_ids)
         self.use_bpe = audio_conf.get('use_bpe', False)
         self.phonemes_only = phonemes_only
         if self.use_bpe:
@@ -576,11 +578,11 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         self.aug_prob_8khz = audio_conf.get('aug_prob_8khz')
         self.aug_prob = audio_conf.get('noise_prob')
         self.aug_prob_spect = audio_conf.get('aug_prob_spect')
-        self.phoneme_count = audio_conf.get('phoneme_count',0) # backward compatible
+        self.phoneme_count = audio_conf.get('phoneme_count', 0) # backward compatible
         self.denoise = audio_conf.get('denoise', False)
 
         if self.phoneme_count > 0:
-            self.phoneme_label_parser = PhonemeLabels(audio_conf.get('phoneme_map',None))
+            self.phoneme_label_parser = PhonemeLabels(audio_conf.get('phoneme_map', None))
 
         if self.aug_prob > 0:
             print('Using sound augs!')
@@ -687,20 +689,31 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             with open(curriculum_filepath, newline='') as f:
                 reader = csv.DictReader(f)
                 rows = [row for row in reader]
-                duration_dict = {wav: dur
-                                 for wav, txt, dur in ids}
+                if len(rows[0]) == 3:
+                    duration_dict = {wav: dur
+                                     for wav, txt, dur in ids}
+                    domain_dict = {}
+                    self.domains = []
+                else:
+                    duration_dict = {wav: dur
+                                     for wav, txt, dur, domain in ids}
+                    domain_dict = {wav: domain
+                                   for wav, txt, dur, domain in ids}
+                    self.domains = list(set(domain
+                                            for wav, txt, dur, domain in ids))
                 for r in rows:
-                    assert set(r.keys()) == cr_column_set
+                    assert set(r.keys()) == cr_column_set or set(r.keys()) == cr_column_set.union({'domain'})
                     r['cer'] = float(r['cer'])
                     r['wer'] = float(r['wer'])
                     r['times_used'] = int(r['times_used'])
                     r['duration'] = float(r['duration']) if 'duration' in r else duration_dict[r['wav']]
+                    r['domain'] = float(r['domain']) if 'domain' in r else domain_dict[r['wav']]
                 self.curriculum = {row['wav']: row for row in rows}
                 print('Curriculum loaded from file {}'.format(curriculum_filepath))
                 # make sure that curriculum contains
                 # only items we have in the manifest
                 curr_paths = set(self.curriculum.keys())
-                manifest_paths = set([wav for wav, txt, dur in ids])
+                manifest_paths = set([tup[0] for tup in ids])  # wavs, avoid ifs
                 print('Manifest_paths {}, curriculum paths {}'.format(
                     len(manifest_paths),
                     len(curr_paths)
@@ -708,21 +721,46 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 if curr_paths != manifest_paths:
                     self.curriculum = {wav: self.curriculum[wav] for wav in manifest_paths}
                     print('Filtering the curriculum file')
-                assert set(self.curriculum.keys()) == set([wav for wav, txt, dur in ids])
+                assert set(self.curriculum.keys()) == set([tup[0] for tup in ids])  # wavs, avoid ifs
+                del domain_dict, duration_dict
+                gc.collect()
         else:
-            self.curriculum = {wav: {'wav': wav,
-                                     'text': '',
-                                     'transcript': '',
-                                     'offsets': None,
-                                     'times_used': 0,
-                                     'duration': dur,
-                                     'cer': 0.999,
-                                     'wer': 0.999} for wav, txt, dur in tq(ids, desc='Loading')}
+            if len(ids[0]) == 3:
+                self.curriculum = {wav: {'wav': wav,
+                                         'text': '',
+                                         'transcript': '',
+                                         'offsets': None,
+                                         'times_used': 0,
+                                         'duration': dur,
+                                         'cer': 0.999,
+                                         'wer': 0.999} for wav, txt, dur in tq(ids, desc='Loading')}
+                self.domains = []
+            elif len(ids[0]) == 4:
+                print('Using domains')
+                self.curriculum = {wav: {'wav': wav,
+                                         'text': '',
+                                         'transcript': '',
+                                         'offsets': None,
+                                         'times_used': 0,
+                                         'domain': domain,
+                                         'duration': dur,
+                                         'cer': 0.999,
+                                         'wer': 0.999} for wav, txt, dur, domain in tq(ids, desc='Loading initial CR')}
+                self.domains = list(set(domain
+                                        for wav, txt, dur, domain
+                                        in tq(ids, desc='Loading domains')
+                                        ))
+                print('Domain list {}'.format(self.domains))
+            else:
+                raise ValueError()
+        del ids
+        gc.collect()
         super(SpectrogramDataset, self).__init__(audio_conf, cache_path, normalize, augment)
 
     def __getitem__(self, index):
         sample = self.ids[index]
         audio_path, transcript_path, dur = sample[0], sample[1], sample[2]
+
         spect = self.parse_audio(audio_path)
         if self.phonemes_only:
             reference = self.parse_transcript(self.get_phoneme_path(transcript_path))
@@ -739,10 +777,18 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         return spect, reference, audio_path
 
     def get_curriculum_info(self, item):
-        audio_path, transcript_path, _dur = item
+        if len(item) == 3:
+            audio_path, transcript_path, _dur = item
+        elif len(item) == 4:
+            audio_path, transcript_path, _dur, domain = item
+        else:
+            raise ValueError()
+
         if audio_path not in self.curriculum:
             return self.get_reference_transcript(transcript_path), 0.999, 0
-        return self.curriculum[audio_path]['text'], self.curriculum[audio_path]['cer'], self.curriculum[audio_path]['times_used']
+        return (self.curriculum[audio_path]['text'],
+                self.curriculum[audio_path]['cer'],
+                self.curriculum[audio_path]['times_used'])
 
     def set_curriculum_epoch(self, epoch,
                              sample=False,
@@ -766,20 +812,29 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                 Curriculum.sample(self.all_ids,
                                   self.get_curriculum_info,
                                   epoch=epoch,
-                                  min=len(self.all_ids) * sample_size)
+                                  min=len(self.all_ids) * sample_size,
+                                  domains=self.domains)
             )
             # ensure the exact sample size
-            if len(self.ids)>(int(len(self.all_ids) * sample_size)+100):
+            if len(self.ids) > (int(len(self.all_ids) * sample_size)+100):
                 print('Subsampling the chosen curriculum')
                 self.ids = random.sample(self.ids,
                                          k=int(len(self.all_ids) * sample_size))
+            if len(self.domains) > 0:
+                print('check equiprobable sampling')
+                domains = [domain for wav, txt, dur, domain in self.ids]
+                domain_cnt = Counter(domains)
+                print(domain_cnt)
         else:
             self.ids = self.all_ids.copy()
         np.random.seed(epoch)
         np.random.shuffle(self.ids)
         self.size = len(self.ids)
 
-    def update_curriculum(self, audio_path, reference, transcript, offsets, cer, wer,
+    def update_curriculum(self,
+                          audio_path,
+                          reference, transcript,
+                          offsets, cer, wer,
                           times_used=0):
         self.curriculum[audio_path] = {
             'wav': audio_path,
@@ -787,6 +842,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             'transcript': transcript,
             'offsets': offsets,
             'times_used': times_used,
+            'domain': self.curriculum[audio_path]['domain'],
             'duration': self.curriculum[audio_path]['duration'],
             'cer': cer,
             'wer': wer
@@ -836,6 +892,18 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
     def get_phoneme_path(self,
                          transcript_path):
         return transcript_path.replace('.txt','_phoneme.txt')
+
+    @staticmethod
+    def parse_mf_row(row):
+        if len(row) == 3:
+            # wav, txt, duration
+            return row[0], row[1], row[2]
+        elif len(row) == 4:
+            # wav, txt, duration, domain
+            return row[0], row[1], row[2], row[3]
+        else:
+            raise ValueError('Wrong manifest format')
+
 
     def __len__(self):
         return self.size

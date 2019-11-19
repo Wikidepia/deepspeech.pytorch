@@ -1,4 +1,5 @@
 import random
+from tqdm import tqdm
 
 
 class Curriculum:
@@ -7,18 +8,41 @@ class Curriculum:
     CL_PROB = 0.2
     CL_POINT = 0.1
     ONLY_ONE_USE_BONUS = 0.1
-   
+
     @classmethod
-    def sample(cls, items, getter, epoch, min=1):
+    def sample(cls, items, getter, epoch,
+               min=1, domains=[]):
         random.seed(epoch)
         total = 0
-        while total < min:
-            for item in items:
+
+        if len(domains) == 0:
+            while total < min:
+                for item in items:
+                    text, cer, times_used = getter(item)
+                    prob = cls.get_prob(text, cer, times_used)
+                    if random.random() < prob:
+                        yield item
+                        total += 1
+        elif len(domains) > 0:
+            domain_items = {}
+            for domain in domains:
+                domain_items[domain] = []
+
+            print('Indexing items by domains')
+            for item in tqdm(items):
+                domain_items[item[3]].append(item)  # split items into domain buckets
+
+            while total < min:
+                domain = random.choice(domains)
+                # equal sampling for domains
+                item = random.choice(domain_items[domain])
                 text, cer, times_used = getter(item)
                 prob = cls.get_prob(text, cer, times_used)
                 if random.random() < prob:
                     yield item
                     total += 1
+        else:
+            raise ValueError()
 
     @classmethod
     def get_prob(cls, text, cer, times_used):
@@ -35,7 +59,7 @@ class Curriculum:
                 cl_prob = (0.51 - cer) / (0.51 - cls.CL_POINT)
             else:
                 # give a significant bonus to make the network see all the data more than once
-                only_one_use_bonus = cls.ONLY_ONE_USE_BONUS     
+                only_one_use_bonus = cls.ONLY_ONE_USE_BONUS
             cl_bonus = cls.CL_PROB * cl_prob
             return cls.BASE_PROB + length_bonus + cl_bonus + only_one_use_bonus
 
