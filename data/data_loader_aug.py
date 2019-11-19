@@ -697,19 +697,21 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
                     domain_dict = {}
                     self.domains = []
                 else:
+                    print('Creating diration_dict and domain_dict')
                     duration_dict = {wav: dur
                                      for wav, txt, dur, domain in ids}
                     domain_dict = {wav: domain
                                    for wav, txt, dur, domain in ids}
                     self.domains = list(set(domain
                                             for wav, txt, dur, domain in ids))
+                    print('Setting domains {}'.format(self.domains))
                 for r in rows:
                     assert set(r.keys()) == cr_column_set or set(r.keys()) == cr_column_set.union({'domain'})
                     r['cer'] = float(r['cer'])
                     r['wer'] = float(r['wer'])
                     r['times_used'] = int(r['times_used'])
                     r['duration'] = float(r['duration']) if 'duration' in r else duration_dict[r['wav']]
-                    r['domain'] = float(r['domain']) if 'domain' in r else domain_dict[r['wav']]
+                    r['domain'] = str(r['domain']) if 'domain' in r else domain_dict[r['wav']]
                 self.curriculum = {row['wav']: row for row in rows}
                 print('Curriculum loaded from file {}'.format(curriculum_filepath))
                 # make sure that curriculum contains
